@@ -1,0 +1,81 @@
+# ==============================================================================
+# 1. Build & Simulation Artifacts (Current Workflow)
+# ==============================================================================
+build/
+sim/build/
+tb/build/
+
+# Icarus Verilog generated files
+*.out
+*.vvp
+a.out
+
+# ModelSim / QuestaSim generated files
+*.wlf
+*.vcd
+*.lxt
+*.lxt2
+*.fsdb
+*.wdb
+
+# Simulation logs
+*.log
+
+# ==============================================================================
+# 2. Xilinx Vivado (Future Proofing)
+# ==============================================================================
+# Vivado generated logs
+vivado*.log
+vivado*.jou
+vivado*.str
+hs_err_*.log
+
+# Vivado project files and directories
+.Xil/
+xsim.dir/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+
+# SDK generated files
+*.sdk/
+*.xsa
+
+# Bitstream and programming files
+*.dcp
+*.bit
+*.bin
+
+# ==============================================================================
+# 3. Editors & OS System Files
+# ==============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VS Code
+.vscode/
+
+# JetBrains (IntelliJ, CLion, etc.)
+.idea/
+*.iml
+
+# Vim / Emacs swap files
+*~
+*.swp
+*.swo
+
+# ==============================================================================
+# 4. C/C++ Host Software (Driver side)
+# ==============================================================================
+# Object files
+*.o
+*.obj
+
+# Dynamic Libraries
+*.so
+*.dylib
+*.dll
