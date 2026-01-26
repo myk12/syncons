@@ -1,6 +1,8 @@
 `timescale 1ns / 1ps
+
 /*
  * Synchronous Consensus Core Module:
+ *
  * Here we assume there is a synchronous distributed system with fixed time slots.
  * Each node sends and receives packets in its designated time slots.
  * Based on the assumptions, we implement a simple consensus core that processes
@@ -10,137 +12,252 @@
 
 module consensus_core #(
     parameter P_NODE_COUNT = 3,
-    parameter P_DATA_WIDTH = 512,
-    parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8,
     parameter P_NODE_ID = 0,
-    parameter P_SRC_MAC = 48'h00_00_00_00_00_00,
-    parameter P_DEST_MAC = 48'hFF_FF_FF_FF_FF_FF
+    parameter P_HEALTH_QUORUM = (P_NODE_COUNT / 2 + 1),
+    parameter P_LOG_ITEM_LEN = 8,   // in bytes
+    parameter P_DATA_WIDTH = 512,
+    parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8
 ) (
     // clock and reset
     input wire                          clk,
     input wire                          rst_n,
 
-    // control interface (from scheduler )
+    // timing control interface (from scheduler )
     input wire [63:0]                   i_current_slot_id,
+    input wire                          i_new_slot_pulse,
     input wire                          i_commit_start_pulse,
+    input wire                          i_slot_end_pulse,
 
     // data interface
     input wire                          i_rx_valid,
     input wire [7:0]                    i_rx_node_id,
-    input wire [319:0]                  i_rx_payload,
+    input wire [7:0]                    i_rx_knowledge_vec,
+    input wire [P_LOG_ITEM_LEN*8-1:0]   i_rx_propose,
 
-    // host interface
-    output reg [P_DATA_WIDTH-1:0]       m_axis_tdata,
-    output reg [P_KEEP_WIDTH-1:0]       m_axis_tkeep,
-    output reg                          m_axis_tvalid,
-    input wire                          m_axis_tready,
-    output reg                          m_axis_tlast
+    // status outputs
+    output reg [P_NODE_COUNT-1:0]       o_alive_mask,
+    output reg                          o_system_halt,   // high when system halts
+
+    // application data output (committed logs)
+    output reg [P_LOG_ITEM_LEN*8*P_NODE_COUNT-1:0]      o_commit_log,
+    output reg [P_NODE_COUNT-1:0]                       o_commit_valid
 );
-
-//------------------------------------------------
-//         Internal Storage (Buffer)
-//------------------------------------------------
-// save received packets for current slot
-reg [319:0]    r_payload_buffer [0:P_NODE_COUNT-1];
-reg [P_NODE_COUNT-1:0] r_valid_bitmap;
-
-//------------------------------------------------
-//         Endianess Conversion
-//------------------------------------------------
-// helper function for byte swapping
-function [15:0] to_big_endian_16(input [15:0] in);
-    to_big_endian_16 = {in[7:0], in[15:8]};
-endfunction
-
-function [63:0] to_big_endian_64(input [63:0] in);
-    to_big_endian_64 = {in[7:0], in[15:8], in[23:16], in[31:24],
-                       in[39:32], in[47:40], in[55:48], in[63:56]};
-endfunction
 
 //------------------------------------------------
 //         State Machine for Consensus Processing
 //------------------------------------------------
-localparam S_COLLECT = 1'b0;
-localparam S_COMMIT = 1'b1;
+localparam S_IDLE           = 2'b00;
+localparam S_COLLECT        = 2'b01;
+localparam S_FAIL_DETECT    = 2'b10;
+localparam S_COMMIT         = 2'b11;
 
-reg state, next_state;
-reg [7:0] r_commit_idx;
-reg [63:0] r_frozen_slot_id;
-reg [15:0] r_ethertype;
+reg [1:0]   state, next_state;
+//------------------------------------------------
+//         Internal Storage (Buffer)
+//------------------------------------------------
+// global status of each node
+reg [P_NODE_COUNT-1:0]          r_alive_mask;                           // alive mask
+reg [P_NODE_COUNT-1:0]          r_knowledge_matrix [0:P_NODE_COUNT-1];  // knowledge matrix
+reg [P_NODE_COUNT-1:0]          r_rx_mask;
 
-localparam [319:0] MAGIC_NOP_PAYLOAD = {320{1'b1}}; // NOP payload
+// logs in this slot
+reg [P_LOG_ITEM_LEN*8-1:0]      r_propose_log [0:P_NODE_COUNT-1];       // proposed logs
+reg [P_LOG_ITEM_LEN*8-1:0]      r_commit_log [0:P_NODE_COUNT-1];        // acknowledged logs
+reg [P_NODE_COUNT-1:0]         r_consensus_reached;                    // consensus reached for each node
+reg [7:0]                      r_rx_number;                            // number of received packets
+
+reg [2:0]                      r_column_sum [0:P_NODE_COUNT-1];        // column sum of knowledge matrix
+reg [P_NODE_COUNT-1:0]         r_others_saw_me;                     // other nodes saw me the same way
+
+reg                            r_am_i_blind;                           // self blind detection
+reg                            r_am_i_mute;                          // self mute detection
+reg                            r_halt_condition_met;                  // halt condition met
+
+// global loop variables
+integer i, j, k;
+
+// ------------------------------------------------
+//              3. combinational logic
+// ------------------------------------------------
+
+// 3.1 calculate received packets count
+assign r_rx_number = count_ones(r_rx_mask);
+
+function [7:0] count_ones;
+    input [P_NODE_COUNT-1:0] vec;
+    integer idx;
+    begin
+        count_ones = 0;
+        for (idx = 0; idx < P_NODE_COUNT; idx = idx + 1) begin
+            if (vec[idx]) begin
+                count_ones = count_ones + 1;
+            end
+        end
+    end
+endfunction
+
+// 3.2 calculate column sums and consensus reached
+always @(*) begin
+    for (k = 0; k < P_NODE_COUNT; k = k + 1) begin
+        r_column_sum[k] = 0;
+        for (j = 0; j < P_NODE_COUNT; j = j + 1) begin
+            r_column_sum[k] = r_column_sum[k] + (r_knowledge_matrix[j][k] ? r_alive_mask[j] : 1'b0);
+        end
+    end
+end
+
+genvar g;
+generate
+    for (g = 0; g < P_NODE_COUNT; g = g + 1) begin : cons_check
+        assign r_consensus_reached[g] = (r_column_sum[g] >= (P_NODE_COUNT / 2 + 1)) ? 1'b1 : 1'b0;
+    end
+endgenerate
+
+// 3.3 self diagnosis: blind and mute detection
+// "Blind": if I see no other alive nodes
+assign r_am_i_blind = (r_alive_mask & r_rx_mask) & ~(1 << P_NODE_ID) == 0;
+
+always @(*) begin
+    r_others_saw_me = {P_NODE_COUNT{1'b0}};
+    for (j = 0; j < P_NODE_COUNT; j = j + 1) begin
+        if (r_alive_mask[j] && r_knowledge_matrix[j][P_NODE_ID]) begin
+            r_others_saw_me[j] = 1'b1;
+        end
+    end
+end
+
+// "Mute": if no other alive nodes saw me as alive
+assign r_am_i_mute = (r_others_saw_me & r_alive_mask & ~(1 << P_NODE_ID)) == 0;
+
+assign r_halt_condition_met = (r_rx_number < P_HEALTH_QUORUM) || r_am_i_blind || r_am_i_mute;
+
+// ------------------------------------------------
+//  FSM PART 1: state register update (sequential)
+// ------------------------------------------------
 
 always @(posedge clk) begin
     if (!rst_n) begin
-        state <= S_COLLECT;
-        next_state <= S_COLLECT;
-        r_valid_bitmap <= {P_NODE_COUNT{1'b0}};
-        r_commit_idx <= 8'b0;
-        r_frozen_slot_id <= 64'b0;
-        m_axis_tvalid <= 1'b0;
-        m_axis_tlast <= 1'b0;
-   end else begin
-       state <= next_state;
+        state <= S_IDLE;
+    end else begin
+        state <= next_state;
+    end
+end
 
+// ------------------------------------------------
+//  FSM PART 2: next state logic and outputs (combinational)
+// ------------------------------------------------
+always @(*) begin
+    // default assignments
+    next_state = state;
+    case (state)
+        S_IDLE: begin
+            if (i_new_slot_pulse & !o_system_halt) begin
+                next_state = S_COLLECT;
+            end
+        end
+        S_COLLECT: begin
+            if (i_commit_start_pulse) begin
+                next_state = S_FAIL_DETECT;
+            end
+        end
+        S_FAIL_DETECT: begin
+            if (o_system_halt) begin
+                next_state = S_IDLE;
+            end else begin
+                next_state = S_COMMIT;
+            end
+        end
+        S_COMMIT: begin
+            next_state = S_IDLE;
+        end
+    endcase
+end
+
+// ------------------------------------------------
+//  FSM PART 3: state actions (sequential)
+// ------------------------------------------------
+always @(posedge clk) begin
+    if (!rst_n) begin
+        // reset all registers
+        for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
+            r_knowledge_matrix[i] <= {P_NODE_COUNT{1'b0}};
+            r_propose_log[i] <= 0;
+            r_commit_log[i] <= 0;
+            r_others_saw_me[i] <= 1'b0;
+            r_rx_mask[i] <= 1'b0;
+
+            o_commit_valid[i] <= 1'b0;
+            o_commit_log[i*P_LOG_ITEM_LEN*8 +: P_LOG_ITEM_LEN*8] <= 0;
+        end
+        r_alive_mask <= {P_NODE_COUNT{1'b1}}; // all alive at start
+        o_system_halt <= 1'b0;
+        o_alive_mask <= {P_NODE_COUNT{1'b1}};
+
+    end else begin
         case (state)
+            S_IDLE: begin
+                // Prepare for new slot
+                if (next_state == S_COLLECT) begin
+                    // Clear buffers
+                    for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
+                        r_knowledge_matrix[i] <= {P_NODE_COUNT{1'b0}};
+                        r_propose_log[i] <= 0;
+
+                        o_commit_valid[i] <= 1'b0;
+                        o_commit_log[i*P_LOG_ITEM_LEN*8 +: P_LOG_ITEM_LEN*8] <= 0;
+                    end
+                    // Reset rx mask
+                    r_rx_mask <= {P_NODE_COUNT{1'b0}};
+                end
+            end
             S_COLLECT: begin
-                m_axis_tvalid <= 1'b0;
-                m_axis_tlast <= 1'b0;
-
-               // Collect incoming packets
+                // Collect incoming packets
                 if (i_rx_valid) begin
-                    r_payload_buffer[i_rx_node_id] <= i_rx_payload;
-                    r_valid_bitmap[i_rx_node_id] <= 1'b1;
+                    // receive valid packet record
+                    r_knowledge_matrix[i_rx_node_id] <= i_rx_knowledge_vec;
+                    r_propose_log[i_rx_node_id] <= i_rx_propose;
+                    r_rx_mask[i_rx_node_id] <= 1'b1;
                 end
-
-                // Transition to COMMIT state
-                if (i_commit_start_pulse) begin
-                    r_frozen_slot_id <= i_current_slot_id;
-                    r_commit_idx <= 8'b0;
-                    next_state <= S_COMMIT;
-                end
-           end
-           S_COMMIT: begin
-               // Commit logic
-                if (!m_axis_tvalid || (m_axis_tvalid && m_axis_tready)) begin
-                    // Prepare next packet to send
-                    if (r_commit_idx < P_NODE_COUNT) begin
-                        if (r_valid_bitmap[r_commit_idx]) begin
-                            // Send valid packet
-                            m_axis_tdata <= {
-                                r_payload_buffer[r_commit_idx],    // Payload
-                                8'h01,                             // Type: 0x01 for data packet
-                                P_NODE_ID[7:0],                   // Node ID
-                                to_big_endian_64(r_frozen_slot_id), // Current Macro Slot ID
-                                P_SRC_MAC,                         // Source MAC
-                                P_DEST_MAC                         // Destination MAC
-                            };
-                        end else begin
-                            // Send NOP packet
-                            m_axis_tdata <= {
-                                MAGIC_NOP_PAYLOAD,                 // Payload
-                                8'h01,                             // Type: 0x01 for data packet
-                                P_NODE_ID[7:0],                   // Node ID
-                                to_big_endian_64(r_frozen_slot_id), // Current Macro Slot ID
-                                P_SRC_MAC,                         // Source MAC
-                                P_DEST_MAC                         // Destination MAC
-                            };
-                        end
-                        m_axis_tvalid <= 1'b1;
-                        m_axis_tlast <= 1'b1;
-
-                        r_commit_idx <= r_commit_idx + 1;
+            end
+            S_FAIL_DETECT: begin
+                // Only update logic if we are not already halting
+                if (!o_system_halt) begin
+                    if (r_halt_condition_met) begin
+                        o_system_halt <= 1'b1;
                     end else begin
-                        // All packets committed, go back to COLLECT state
-                        next_state <= S_COLLECT;
-                        r_valid_bitmap <= {P_NODE_COUNT{1'b0}}; // Clear buffer
-                        m_axis_tvalid <= 1'b0;
-                        m_axis_tlast <= 1'b0;
+                        // Perform Alive Mask Update
+                        for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
+                            // Rule A: Dead if unresponsive (did not send packet)
+                            if (r_rx_mask[i] == 1'b0) begin
+                                r_alive_mask[i] <= 1'b0; // mark as dead
+                            end
+                            // Rule B: Dead if did not ack consensused logs
+                            else begin
+                                for (j = 0; j < P_NODE_COUNT; j = j + 1) begin
+                                    if (r_consensus_reached[j] && !r_knowledge_matrix[i][j]) begin
+                                        r_alive_mask[i] <= 1'b0; // mark as dead
+                                    end
+                                end
+                            end
+                        end
+                        o_alive_mask <= r_alive_mask;   // update output alive mask
                     end
                 end
-           end
-       endcase
-   end
+            end
+            S_COMMIT: begin
+                // Commit logs based on consensus
+                for (k = 0; k < P_NODE_COUNT; k = k + 1) begin
+                    if (r_consensus_reached[k]) begin
+                        r_commit_log[k] <= r_propose_log[k];
+                        o_commit_log[k*P_LOG_ITEM_LEN*8 +: P_LOG_ITEM_LEN*8] <= r_propose_log[k];
+                        o_commit_valid[k] <= 1'b1;
+                    end else begin
+                        o_commit_valid[k] <= 1'b0;
+                    end
+                end
+            end
+        endcase
+    end
 end
 
 endmodule

@@ -10,6 +10,7 @@ SIM_DIR   = sim
 
 # 2. Top-level test module name (corresponding to the module name in tb/tb_3node_cluster.v)
 TOP_MODULE = tb_3node_cluster
+TOP_MODULE_CORE = tb_consensus_core
 
 # 3. Source file definitions
 # Note: This strictly corresponds to the tree structure you provided
@@ -19,9 +20,13 @@ RTL_SRCS = $(RTL_DIR)/consensus_scheduler.v \
            $(RTL_DIR)/consensus_core.v \
            $(RTL_DIR)/consensus_nic.v
 
+CORE_RTL_SRC = $(RTL_DIR)/consensus_core.v
+
 # Testbench source files (including Switch model and Cluster TB)
 TB_SRCS  = $(TB_DIR)/atomic_broadcast_switch.v \
            $(TB_DIR)/$(TOP_MODULE).v
+
+CORE_TB_SRCS  = $(TB_DIR)/$(TOP_MODULE_CORE).v
 
 # 4. Compiler configuration (Icarus Verilog)
 # -g2012: Enable SystemVerilog support
@@ -33,14 +38,25 @@ IV_FLAGS = -g2012 -Wall -I $(RTL_DIR)
 # 5. Build Targets
 # ==============================================================================
 
-.PHONY: all clean run view check
+.PHONY: all clean run view check tb_core
 
 # Default target: compile and run
 all: run
 
-# Create build directory
-$(BUILD_DIR):
-	@mkdir -p $(BUILD_DIR)
+# Run simulation
+run: $(BUILD_DIR)/sim.out
+	@echo "------------------------------------------------"
+	@echo "🚀 Running Simulation..."
+	@echo "------------------------------------------------"
+	vvp $(BUILD_DIR)/sim.out
+
+# Compilation step for Consensus Core only
+tb_core: $(BUILD_DIR) $(CORE_RTL_SRC) $(CORE_TB_SRCS)
+	@echo "------------------------------------------------"
+	@echo "🚀 Running Consensus Core Simulation..."
+	@echo "------------------------------------------------"
+	iverilog $(IV_FLAGS) -o $(BUILD_DIR)/sim_core.out $(CORE_RTL_SRC) $(CORE_TB_SRCS)
+	vvp $(BUILD_DIR)/sim_core.out
 
 # Compilation step
 $(BUILD_DIR)/sim.out: $(BUILD_DIR) $(RTL_SRCS) $(TB_SRCS)
@@ -49,12 +65,9 @@ $(BUILD_DIR)/sim.out: $(BUILD_DIR) $(RTL_SRCS) $(TB_SRCS)
 	@echo "------------------------------------------------"
 	iverilog $(IV_FLAGS) -o $(BUILD_DIR)/sim.out $(RTL_SRCS) $(TB_SRCS)
 
-# Run simulation
-run: $(BUILD_DIR)/sim.out
-	@echo "------------------------------------------------"
-	@echo "🚀 Running Simulation..."
-	@echo "------------------------------------------------"
-	vvp $(BUILD_DIR)/sim.out
+# Create build directory
+$(BUILD_DIR):
+	@mkdir -p $(BUILD_DIR)
 
 # View waveform (requires GTKWave)
 # Note: Ensure $dumpfile in TB outputs to build/ directory
