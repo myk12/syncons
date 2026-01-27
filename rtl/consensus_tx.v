@@ -5,27 +5,28 @@ module consensus_tx #(
     parameter integer P_KEEP_WIDTH = P_DATA_WIDTH / 8,
     parameter integer P_NODE_ID = 0,
     parameter integer P_NODE_COUNT = 3,
-    parameter [47:0] P_DEST_MAC = 48'hFF_FF_FF_FF_FF_FF,
+    parameter integer P_LOG_ITEM_LEN = 40, // bytes
     parameter [47:0] P_SRC_MAC = 48'h02_00_00_00_00_00,
     parameter [15:0] P_ETHERNET_TYPE = 16'h88B5
 ) (
     // clock and reset
-    input wire                          clk,
-    input wire                          rst_n,
+    input wire                              clk,
+    input wire                              rst_n,
 
-    // Control logic
-    input wire                          i_tx_trigger,
-    input wire [63:0]                   i_current_slot_id,
-
-    // User data to send
-    input wire [319:0]                  i_payload_vec,
+    // Control and Data
+    input wire                              i_tx_allowed,
+    input wire                              i_new_slot_pulse,
+    input wire [63:0]                       i_current_slot_id,
+    input wire [P_NODE_COUNT-1:0]           i_knowledge_vec,
+    input wire [P_LOG_ITEM_LEN*8-1:0]       i_propose,
 
     // AXI Stream Master Output
-    output reg [P_DATA_WIDTH-1:0]       m_axis_tdata,
-    output reg [P_KEEP_WIDTH-1:0]       m_axis_tkeep,
-    output reg                          m_axis_tvalid,
-    output reg                          m_axis_tlast,
-    input wire                          m_axis_tready
+    output reg [P_DATA_WIDTH-1:0]           m_axis_tdata,
+    output reg [P_KEEP_WIDTH-1:0]           m_axis_tkeep,
+    output reg                              m_axis_tvalid,
+    output reg                              m_axis_tlast,
+    output reg                              m_axis_tuser,
+    input wire                              m_axis_tready
 );
 //------------------------------------------------
 //         Endianess Conversion
@@ -41,45 +42,147 @@ function [63:0] to_big_endian_64(input [63:0] in);
 endfunction
 
 //------------------------------------------------
+//           parameter Definitions
+//------------------------------------------------
+localparam S_IDLE           = 2'b00;
+localparam S_WAITING        = 2'b01;
+localparam S_BROADCAST      = 2'b10;
+reg [1:0] state;
+reg [7:0]   r_target_node_id;
+
+// MAC address
+reg [47:0]  v_dest_mac;
+
+always @(*) begin
+    // Default value
+    v_dest_mac = 48'hFF_FF_FF_FF_FF_FF; // Broadcast MAC
+
+    // Select destination MAC based on destination node ID
+    case (r_target_node_id)
+        0: v_dest_mac = 48'h00_0a_35_06_50_94;
+        1: v_dest_mac = 48'h00_0a_35_06_09_24;
+        2: v_dest_mac = 48'h00_0a_35_06_0b_84;
+        3: v_dest_mac = 48'h00_0a_35_06_09_3c;
+        4: v_dest_mac = 48'h00_0a_35_06_0b_72;
+        default: v_dest_mac = 48'hFF_FF_FF_FF_FF_FF; // Broadcast MAC
+    endcase
+end
+
+//------------------------------------------------
 //         Packet Construction (Single Cycle)
 //------------------------------------------------
-wire [P_DATA_WIDTH-1:0] w_packet_data;
-wire [47:0] w_dst_mac = P_DEST_MAC;
-
-assign w_packet_data = {
-    i_payload_vec,                // Payload (40 bytes)
-    8'h01,                        // Type: 0x01 for data packet
-    P_NODE_ID[7:0],              // Node ID
-    to_big_endian_64(i_current_slot_id),    // Current Macro Slot ID
-    to_big_endian_16(P_ETHERNET_TYPE),        // Ethertype
-    P_SRC_MAC,                      // Source MAC
-    P_DEST_MAC                      // Destination MAC
-};
-
-//------------------------------------------------
-//         AXI Stream Packet Send Logic
-//------------------------------------------------
+// Construct packet flit
 // Packet format:
+// [ Ethernet Header ]
+//   - Destination MAC (48 bits)
+//   - Source MAC (48 bits)
+//   - Ethertype (16 bits)
+// [ Consensus Header ]
+//  - Slot ID (64 bits)
+//  - Node ID (8 bits)
+//  - Knowledge Vector (8 bits)
+//  - Payload (40 bytes)
+
+reg [P_DATA_WIDTH-1:0]      v_packet_flit;
+always @(*) begin
+    v_packet_flit = {P_DATA_WIDTH{1'b0}};
+
+    // ------- Ethernet Header -------
+    v_packet_flit[0*8:0]       = v_dest_mac[47:40];
+    v_packet_flit[1*8:8]       = v_dest_mac[39:32];
+    v_packet_flit[2*8:16]      = v_dest_mac[31:24];
+    v_packet_flit[3*8:24]      = v_dest_mac[23:16];
+    v_packet_flit[4*8:32]      = v_dest_mac[15:8];
+    v_packet_flit[5*8:40]      = v_dest_mac[7:0];
+
+    v_packet_flit[6*8:48]      = P_SRC_MAC[47:40];
+    v_packet_flit[7*8:56]      = P_SRC_MAC[39:32];
+    v_packet_flit[8*8:64]      = P_SRC_MAC[31:24];
+    v_packet_flit[9*8:72]      = P_SRC_MAC[23:16];
+    v_packet_flit[10*8:80]     = P_SRC_MAC[15:8];
+    v_packet_flit[11*8:88]     = P_SRC_MAC[7:0];
+
+    v_packet_flit[12*8 +: 16] = to_big_endian_16(P_ETHERNET_TYPE);
+
+    // ------- Consensus Header -------
+    v_packet_flit[14*8 +: 64]  = to_big_endian_64(i_current_slot_id);
+    v_packet_flit[22*8 +: 8]   = P_NODE_ID[7:0];
+    v_packet_flit[23*8 +: 8]   = i_knowledge_vec;
+
+    // ------- Payload -------
+    v_packet_flit[24*8 +: P_LOG_ITEM_LEN*8] = i_propose;
+end
+
+//------------------------------------------------
+//         State Machine
+//------------------------------------------------
 always @(posedge clk) begin
     if (!rst_n) begin
-        m_axis_tdata <= 0;
-        m_axis_tkeep <= 0;
-        m_axis_tvalid <= 0;
-        m_axis_tlast <= 0;
+        state <= S_IDLE;
+        m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
+        m_axis_tkeep <= {P_KEEP_WIDTH{1'b0}};
+        m_axis_tvalid <= 1'b0;
+        m_axis_tlast <= 1'b0;
+        m_axis_tuser <= 1'b0;
+        r_target_node_id <= 8'b0;
     end else begin
-        if (m_axis_tvalid && m_axis_tready) begin
-            // Packet sent
-            m_axis_tvalid <= 0;
-            m_axis_tdata <= 0;
-            m_axis_tkeep <= 0;
-            m_axis_tlast <= 0;
-        end else if (i_tx_trigger && !m_axis_tvalid) begin
-            // Trigger to send packet
-            m_axis_tdata <= w_packet_data;
-            m_axis_tkeep <= {P_KEEP_WIDTH{1'b1}}; // All bytes are valid
-            m_axis_tvalid <= 1;
-            m_axis_tlast <= 1;
-        end
+        case (state)
+            S_IDLE: begin
+                // clear outputs
+                m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
+                m_axis_tkeep <= {P_KEEP_WIDTH{1'b0}};
+                m_axis_tvalid <= 1'b0;
+                m_axis_tlast <= 1'b0;
+                m_axis_tuser <= 1'b0;
+
+                r_target_node_id <= 0;
+
+                if (i_new_slot_pulse) begin
+                    // Start broadcasting to all nodes
+                    state <= S_WAITING;
+                end
+            end
+            S_WAITING: begin
+                if (i_tx_allowed) begin
+                    state <= S_BROADCAST;
+                end
+            end
+
+            S_BROADCAST: begin
+                if (!i_tx_allowed) begin
+                    state <= S_IDLE; // Abort if not allowed
+                    m_axis_tvalid <= 1'b0;
+                    m_axis_tlast <= 1'b0;
+                    m_axis_tuser <= 1'b0;
+                end
+                else begin
+                    if (!m_axis_tvalid || m_axis_tready) begin
+                        // Check if this is the last node
+                        m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
+                        m_axis_tkeep <= {P_KEEP_WIDTH{1'b0}};
+                        m_axis_tvalid <= 1'b0;
+                        m_axis_tlast <= 1'b0;
+                        m_axis_tuser <= 1'b0;
+
+                        if (r_target_node_id >= P_NODE_COUNT) begin
+                            // Finished broadcasting
+                            state <= S_IDLE;
+                        end else begin
+                            // broadcast to all nodes except self
+                            if (r_target_node_id != P_NODE_ID) begin
+                                m_axis_tdata <= v_packet_flit;
+                                m_axis_tkeep <= {P_KEEP_WIDTH{1'b1}}; // All bytes valid
+                                m_axis_tvalid <= 1'b1;
+                                m_axis_tuser <= 1'b0;
+                                m_axis_tlast <= 1'b1; // Last flit for this transmission
+                            end
+                            r_target_node_id <= r_target_node_id + 1;
+                        end
+                    end
+                end
+            end
+            default: state <= S_IDLE;
+        endcase
     end 
 end
 

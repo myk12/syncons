@@ -19,12 +19,14 @@ module atomic_broadcast_switch #(
     input  wire [P_NODE_COUNT*(P_DATA_WIDTH/8)-1:0]     s_axis_tx_tkeep,
     input  wire [P_NODE_COUNT-1:0]                      s_axis_tx_tvalid,
     input  wire [P_NODE_COUNT-1:0]                      s_axis_tx_tlast,
+    input  wire [P_NODE_COUNT-1:0]                      s_axis_tx_tuser,
     output wire [P_NODE_COUNT-1:0]                      s_axis_tx_tready,   // Always ready
 
     // RX Signals to Nodes
     output reg  [P_NODE_COUNT*P_DATA_WIDTH-1:0]         m_axis_rx_tdata,
     output reg  [P_NODE_COUNT*(P_DATA_WIDTH/8)-1:0]     m_axis_rx_tkeep,
     output reg  [P_NODE_COUNT-1:0]                      m_axis_rx_tvalid,
+    output reg  [P_NODE_COUNT-1:0]                      m_axis_rx_tuser,
     output reg  [P_NODE_COUNT-1:0]                      m_axis_rx_tlast,
     input  wire [P_NODE_COUNT-1:0]                      m_axis_rx_tready    // Always ready
 );

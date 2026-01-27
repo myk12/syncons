@@ -99,6 +99,3 @@ Key parameters defined in `rtl` and `sim` (configurable):
 * [X] **Phase 2:** 3-Node Full Cycle Simulation (Loopback/Switch Model)
 * [ ] **Phase 3:** Fault Tolerance & Hole Filling
 * [ ] **Phase 4:** Integration into Corundum NIC Project (Vivado Synthesis)
-
-
-## Time Scheduler

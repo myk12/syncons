@@ -19,24 +19,28 @@ module consensus_core #(
     parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8
 ) (
     // clock and reset
-    input wire                          clk,
-    input wire                          rst_n,
+    input wire                                  clk,
+    input wire                                  rst_n,
 
     // timing control interface (from scheduler )
-    input wire [63:0]                   i_current_slot_id,
-    input wire                          i_new_slot_pulse,
-    input wire                          i_commit_start_pulse,
-    input wire                          i_slot_end_pulse,
+    input wire [63:0]                           i_current_slot_id,
+    input wire                                  i_new_slot_pulse,
+    input wire                                  i_commit_start_pulse,
+    input wire                                  i_slot_end_pulse,
 
     // data interface
-    input wire                          i_rx_valid,
-    input wire [7:0]                    i_rx_node_id,
-    input wire [7:0]                    i_rx_knowledge_vec,
-    input wire [P_LOG_ITEM_LEN*8-1:0]   i_rx_propose,
+    input wire                                  i_rx_valid,
+    input wire [7:0]                            i_rx_node_id,
+    input wire [7:0]                            i_rx_knowledge_vec,
+    input wire [P_LOG_ITEM_LEN*8-1:0]           i_rx_propose,
 
     // status outputs
-    output reg [P_NODE_COUNT-1:0]       o_alive_mask,
-    output reg                          o_system_halt,   // high when system halts
+    output reg [P_NODE_COUNT-1:0]               o_alive_mask,
+    output reg                                  o_system_halt,   // high when system halts
+
+    // data output
+    output reg [P_NODE_COUNT-1:0]               o_tx_knowledge_vec,
+    output wire [P_LOG_ITEM_LEN*8-1:0]          o_tx_propose,
 
     // application data output (committed logs)
     output reg [P_LOG_ITEM_LEN*8*P_NODE_COUNT-1:0]      o_commit_log,
@@ -59,6 +63,7 @@ reg [1:0]   state, next_state;
 reg [P_NODE_COUNT-1:0]          r_alive_mask;                           // alive mask
 reg [P_NODE_COUNT-1:0]          r_knowledge_matrix [0:P_NODE_COUNT-1];  // knowledge matrix
 reg [P_NODE_COUNT-1:0]          r_rx_mask;
+reg [P_NODE_COUNT-1:0]          r_last_rx_mask;     // This is my own knowledge vector                      // received mask
 
 // logs in this slot
 reg [P_LOG_ITEM_LEN*8-1:0]      r_propose_log [0:P_NODE_COUNT-1];       // proposed logs
@@ -72,6 +77,9 @@ reg [P_NODE_COUNT-1:0]         r_others_saw_me;                     // other nod
 reg                            r_am_i_blind;                           // self blind detection
 reg                            r_am_i_mute;                          // self mute detection
 reg                            r_halt_condition_met;                  // halt condition met
+
+// propose padding with NODE_ID
+assign o_tx_propose = {P_LOG_ITEM_LEN{P_NODE_ID[7:0]}};
 
 // global loop variables
 integer i, j, k;
@@ -149,28 +157,35 @@ end
 always @(*) begin
     // default assignments
     next_state = state;
-    case (state)
-        S_IDLE: begin
-            if (i_new_slot_pulse & !o_system_halt) begin
-                next_state = S_COLLECT;
+
+    if (i_new_slot_pulse & !o_system_halt) begin
+        // on new slot, go to COLLECT
+        next_state = S_COLLECT;
+    end
+    else begin
+        case (state)
+            S_IDLE: begin
+                if (i_new_slot_pulse & !o_system_halt) begin
+                    next_state = S_COLLECT;
+                end
             end
-        end
-        S_COLLECT: begin
-            if (i_commit_start_pulse) begin
-                next_state = S_FAIL_DETECT;
+            S_COLLECT: begin
+                if (i_commit_start_pulse) begin
+                    next_state = S_FAIL_DETECT;
+                end
             end
-        end
-        S_FAIL_DETECT: begin
-            if (o_system_halt) begin
+            S_FAIL_DETECT: begin
+                if (o_system_halt) begin
+                    next_state = S_IDLE;
+                end else begin
+                    next_state = S_COMMIT;
+                end
+            end
+            S_COMMIT: begin
                 next_state = S_IDLE;
-            end else begin
-                next_state = S_COMMIT;
             end
-        end
-        S_COMMIT: begin
-            next_state = S_IDLE;
-        end
-    endcase
+        endcase
+    end
 end
 
 // ------------------------------------------------
@@ -185,11 +200,14 @@ always @(posedge clk) begin
             r_commit_log[i] <= 0;
             r_others_saw_me[i] <= 1'b0;
             r_rx_mask[i] <= 1'b0;
+            r_last_rx_mask[i] <= 1'b0;
 
             o_commit_valid[i] <= 1'b0;
             o_commit_log[i*P_LOG_ITEM_LEN*8 +: P_LOG_ITEM_LEN*8] <= 0;
         end
         r_alive_mask <= {P_NODE_COUNT{1'b1}}; // all alive at start
+        r_rx_mask <= {P_NODE_COUNT{1'b1}}; // all alive at start
+        r_last_rx_mask <= {P_NODE_COUNT{1'b0}};
         o_system_halt <= 1'b0;
         o_alive_mask <= {P_NODE_COUNT{1'b1}};
 
@@ -206,12 +224,19 @@ always @(posedge clk) begin
                         o_commit_valid[i] <= 1'b0;
                         o_commit_log[i*P_LOG_ITEM_LEN*8 +: P_LOG_ITEM_LEN*8] <= 0;
                     end
+                    r_last_rx_mask      <= r_rx_mask;
+                    o_tx_knowledge_vec  <= r_rx_mask; // update my own knowledge vector
                     // Reset rx mask
-                    r_rx_mask <= {P_NODE_COUNT{1'b0}};
+                    r_rx_mask           <= {P_NODE_COUNT{1'b0}};
                 end
             end
             S_COLLECT: begin
                 // Collect incoming packets
+                // set self rx mask
+                r_rx_mask[P_NODE_ID] <= 1'b1;
+                r_knowledge_matrix[P_NODE_ID] <= r_last_rx_mask;
+
+                // process incoming packets
                 if (i_rx_valid) begin
                     // receive valid packet record
                     r_knowledge_matrix[i_rx_node_id] <= i_rx_knowledge_vec;

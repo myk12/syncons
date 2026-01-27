@@ -18,7 +18,7 @@ RTL_SRCS = $(RTL_DIR)/consensus_scheduler.v \
            $(RTL_DIR)/consensus_tx.v \
            $(RTL_DIR)/consensus_rx.v \
            $(RTL_DIR)/consensus_core.v \
-           $(RTL_DIR)/consensus_nic.v
+           $(RTL_DIR)/consensus_node.v
 
 CORE_RTL_SRC = $(RTL_DIR)/consensus_core.v
 
