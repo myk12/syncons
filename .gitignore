@@ -1,9 +1,8 @@
 # ==============================================================================
 # 1. Build & Simulation Artifacts (Current Workflow)
 # ==============================================================================
-build/
-sim/build/
-tb/build/
+fpga/build/
+fpga/*.vcd
 
 # Icarus Verilog generated files
 *.out
@@ -58,6 +57,9 @@ xsim.dir/
 
 # VS Code
 .vscode/
+.venv/
+__pycache__/
+*.pyc
 
 # JetBrains (IntelliJ, CLion, etc.)
 .idea/
