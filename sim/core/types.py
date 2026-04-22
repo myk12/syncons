@@ -39,6 +39,7 @@ class MembershipState(str, Enum):
 class Packet:
     epoch_id: int
     src_id: int
+    incarnation_id: int
     membership_epoch: int
     ack_bitmap: int
     payload: str
@@ -54,27 +55,77 @@ class EpochStage:
     ack_matrix: dict[int, int] = field(default_factory=dict)
 
 
+# Delivery is the medium through which the fault model can control the delivery of packets. By setting deliver_epoch, 
+# the fault model can specify when a packet should be delivered.
+# By setting reason, the fault model can specify the reason for the delivery (e.g., "deliver", "drop", "delay"). 
+# The other fields can be used to override the packet's epoch, membership epoch, ack bitmap, and payload for testing purposes. 
+# The extra_deliver_epochs field can be used to specify additional epochs at which the packet should be delivered (e.g., for simulating duplicate deliveries).
+@dataclass
+class DeliveryCopy:
+    deliver_epoch: int
+    reason: str = "duplicate deliver"
+    packet_epoch_override: int | None = None
+    incarnation_id_override: int | None = None
+    membership_epoch_override: int | None = None
+    ack_override: int | None = None
+    payload_override: str | None = None
+
+
 @dataclass
 class Delivery:
     deliver_epoch: int | None
     reason: str = "deliver"
     packet_epoch_override: int | None = None
+    incarnation_id_override: int | None = None
     membership_epoch_override: int | None = None
     ack_override: int | None = None
     payload_override: str | None = None
     extra_deliver_epochs: tuple[int, ...] = ()
+    extra_copies: tuple[DeliveryCopy, ...] = ()
 
 
-FaultModel = Callable[[Packet, int], Delivery]
+NetworkFaultModel = Callable[[Packet, int], Delivery]
 PayloadFactory = Callable[[int, int], str]
-ActivityModel = Callable[[int, int], bool]
+NodeFaultModel = Callable[[int, int], bool]
+
+
+@dataclass(frozen=True)
+class InstalledConfig:
+    membership_epoch: int
+    members_bitmap: int
+    approved_incarnations: dict[int, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PendingConfig:
+    membership_epoch: int
+    members_bitmap: int
+    effective_epoch: int
+    approved_incarnations: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ControlPlaneState:
-    membership_epoch: int
-    active_membership: int
+    installed_config: InstalledConfig
     node_states: dict[int, MembershipState]
+    pending_config: PendingConfig | None = None
+
+    @property
+    def membership_epoch(self) -> int:
+        return self.installed_config.membership_epoch
+
+    @property
+    def installed_membership(self) -> int:
+        return self.installed_config.members_bitmap
+
+    @property
+    def active_membership(self) -> int:
+        # Backward-compatible alias while the rest of the simulator is renamed.
+        return self.installed_membership
+
+    @property
+    def approved_incarnations(self) -> dict[int, int]:
+        return self.installed_config.approved_incarnations
 
 
 ControlPlaneModel = Callable[[int, int], ControlPlaneState]
@@ -110,8 +161,8 @@ class ScenarioExpectation:
 
 @dataclass(frozen=True)
 class ScenarioSpec:
-    fault_model: FaultModel
-    activity_model: ActivityModel
+    network_fault_model: NetworkFaultModel
+    node_fault_model: NodeFaultModel
     control_plane_model: ControlPlaneModel
     epochs: int
     description: str

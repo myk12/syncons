@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .types import EpochStage, MembershipState, NodeStatus, PayloadFactory, Packet, bitmap_members, bitmap_text
+from .types import ControlPlaneState, EpochStage, MembershipState, NodeStatus, PayloadFactory, Packet, bitmap_members, bitmap_text
 
 
 def default_payload(node_id: int, epoch_id: int) -> str:
@@ -23,8 +23,11 @@ class Node:
 
     def __post_init__(self) -> None:
         self.membership_state = MembershipState.ACTIVE
-        self.local_membership_epoch = 0
-        self.active_membership = (1 << self.node_count) - 1
+        self.installed_membership_epoch = 0
+        self.installed_membership = (1 << self.node_count) - 1
+        self.local_incarnation_id = 0
+        self.approved_incarnations = {node_id: 0 for node_id in range(self.node_count)}
+        self.pending_config = None
         self.current_stage = EpochStage(epoch_id=-1, membership_epoch=0, membership_bitmap=0)
         self.ack_stage = EpochStage(epoch_id=-1, membership_epoch=0, membership_bitmap=0)
         self.commit_stage = EpochStage(epoch_id=-2, membership_epoch=0, membership_bitmap=0)
@@ -34,43 +37,72 @@ class Node:
         return max(1, membership_bitmap.bit_count() // 2 + 1)
 
     def _reset_pipeline(self, epoch_id: int) -> None:
-        self.current_stage = EpochStage(epoch_id=-1, membership_epoch=self.local_membership_epoch, membership_bitmap=self.active_membership)
-        self.ack_stage = EpochStage(epoch_id=-1, membership_epoch=self.local_membership_epoch, membership_bitmap=self.active_membership)
-        self.commit_stage = EpochStage(epoch_id=-2, membership_epoch=self.local_membership_epoch, membership_bitmap=self.active_membership)
+        self.current_stage = EpochStage(
+            epoch_id=-1,
+            membership_epoch=self.installed_membership_epoch,
+            membership_bitmap=self.installed_membership,
+        )
+        self.ack_stage = EpochStage(
+            epoch_id=-1,
+            membership_epoch=self.installed_membership_epoch,
+            membership_bitmap=self.installed_membership,
+        )
+        self.commit_stage = EpochStage(
+            epoch_id=-2,
+            membership_epoch=self.installed_membership_epoch,
+            membership_bitmap=self.installed_membership,
+        )
         self.trace.append(f"epoch {epoch_id}: reset fast-path pipeline")
 
-    def apply_control_plane(
-        self,
-        epoch_id: int,
-        membership_epoch: int,
-        active_membership: int,
-        membership_state: MembershipState,
-    ) -> None:
+    def apply_control_plane(self, epoch_id: int, control_state: ControlPlaneState) -> None:
         previous_state = self.membership_state
-        previous_epoch = self.local_membership_epoch
-        previous_bitmap = self.active_membership
+        previous_epoch = self.installed_membership_epoch
+        previous_bitmap = self.installed_membership
+        previous_incarnation = self.local_incarnation_id
 
-        self.local_membership_epoch = membership_epoch
-        self.active_membership = active_membership
+        membership_state = control_state.node_states.get(self.node_id, MembershipState.FAILED)
+        self.installed_membership_epoch = control_state.membership_epoch
+        self.installed_membership = control_state.installed_membership
+        self.approved_incarnations = dict(control_state.approved_incarnations)
+        self.pending_config = control_state.pending_config
         self.membership_state = membership_state
 
         if self.status == NodeStatus.CRASHED and membership_state in (MembershipState.RECOVERING, MembershipState.REJOIN_PENDING, MembershipState.ACTIVE):
             self.status = NodeStatus.RUNNING
+            self.local_incarnation_id += 1
             self.status_reason = "rebooted_under_control_plane"
-            self.trace.append(f"epoch {epoch_id}: rebooted into membership state {membership_state.value}")
+            self.trace.append(
+                f"epoch {epoch_id}: rebooted into membership state {membership_state.value} with local incarnation {self.local_incarnation_id}"
+            )
 
         if previous_state != MembershipState.ACTIVE and membership_state == MembershipState.ACTIVE:
             self._reset_pipeline(epoch_id)
             self.trace.append(
-                f"epoch {epoch_id}: control plane activated membership_epoch={membership_epoch} active={bitmap_text(active_membership, self.node_count)}"
+                "epoch "
+                + str(epoch_id)
+                + f": control plane activated installed_membership_epoch={self.installed_membership_epoch} "
+                + f"installed={bitmap_text(self.installed_membership, self.node_count)}"
+            )
+        elif previous_epoch != self.installed_membership_epoch or previous_bitmap != self.installed_membership:
+            self.trace.append(
+                "epoch "
+                + str(epoch_id)
+                + f": installed config updated to epoch={self.installed_membership_epoch} "
+                + f"members={bitmap_text(self.installed_membership, self.node_count)}"
+            )
+
+        approved_local_incarnation = self.approved_incarnations.get(self.node_id)
+        if approved_local_incarnation is not None and approved_local_incarnation != previous_incarnation:
+            self.trace.append(
+                f"epoch {epoch_id}: control plane approves incarnation {approved_local_incarnation} for node {self.node_id}"
             )
 
     def _new_current_stage(self, epoch_id: int) -> EpochStage:
         payload = self.payload_factory(self.node_id, epoch_id)
         return EpochStage(
             epoch_id=epoch_id,
-            membership_epoch=self.local_membership_epoch,
-            membership_bitmap=self.active_membership,
+            membership_epoch=self.installed_membership_epoch,
+            membership_bitmap=self.installed_membership,
             my_bitmap=1 << self.node_id,
             proposals={self.node_id: payload},
             ack_matrix={},
@@ -83,7 +115,7 @@ class Node:
 
         self.current_epoch = new_epoch
 
-        if self.membership_state != MembershipState.ACTIVE or not (self.active_membership & (1 << self.node_id)):
+        if self.membership_state != MembershipState.ACTIVE or not (self.installed_membership & (1 << self.node_id)):
             self.trace.append(
                 f"epoch {new_epoch}: membership_state={self.membership_state.value}, no fast-path participation"
             )
@@ -102,12 +134,16 @@ class Node:
         packet = Packet(
             epoch_id=new_epoch,
             src_id=self.node_id,
-            membership_epoch=self.local_membership_epoch,
+            incarnation_id=self.local_incarnation_id,
+            membership_epoch=self.installed_membership_epoch,
             ack_bitmap=self.ack_stage.my_bitmap,
             payload=self.current_stage.proposals[self.node_id],
         )
         self.trace.append(
-            f"epoch {new_epoch}: tx membership_epoch={packet.membership_epoch} ack={bitmap_text(packet.ack_bitmap, self.node_count)} payload={packet.payload}"
+            "epoch "
+            + str(new_epoch)
+            + f": tx incarnation={packet.incarnation_id} membership_epoch={packet.membership_epoch} "
+            + f"ack={bitmap_text(packet.ack_bitmap, self.node_count)} payload={packet.payload}"
         )
         return packet
 
@@ -173,15 +209,22 @@ class Node:
             )
             return
 
-        if packet.membership_epoch != self.local_membership_epoch:
+        if packet.membership_epoch != self.installed_membership_epoch:
             self.trace.append(
-                f"epoch {self.current_epoch}: drop packet from node {packet.src_id}, membership_epoch {packet.membership_epoch} != local {self.local_membership_epoch}"
+                f"epoch {self.current_epoch}: drop packet from node {packet.src_id}, membership_epoch {packet.membership_epoch} != local {self.installed_membership_epoch}"
             )
             return
 
-        if not (self.active_membership & (1 << packet.src_id)):
+        if not (self.installed_membership & (1 << packet.src_id)):
             self.trace.append(
-                f"epoch {self.current_epoch}: drop packet from inactive node {packet.src_id}"
+                f"epoch {self.current_epoch}: drop packet from node {packet.src_id}, sender outside installed membership"
+            )
+            return
+
+        approved_incarnation = self.approved_incarnations.get(packet.src_id)
+        if approved_incarnation is not None and packet.incarnation_id != approved_incarnation:
+            self.trace.append(
+                f"epoch {self.current_epoch}: drop packet from node {packet.src_id}, incarnation {packet.incarnation_id} != approved {approved_incarnation}"
             )
             return
 
@@ -191,7 +234,7 @@ class Node:
             self.ack_stage.ack_matrix[packet.src_id] = packet.ack_bitmap
             self.trace.append(
                 f"epoch {self.current_epoch}: rx current packet from node {packet.src_id}, "
-                f"membership_epoch={packet.membership_epoch} ack={bitmap_text(packet.ack_bitmap, self.node_count)}"
+                f"incarnation={packet.incarnation_id} membership_epoch={packet.membership_epoch} ack={bitmap_text(packet.ack_bitmap, self.node_count)}"
             )
             return
 
@@ -218,8 +261,19 @@ class Node:
             "status": self.status.value,
             "status_reason": self.status_reason,
             "membership_state": self.membership_state.value,
-            "membership_epoch": self.local_membership_epoch,
-            "active_membership": self.active_membership,
+            "membership_epoch": self.installed_membership_epoch,
+            "incarnation_id": self.local_incarnation_id,
+            "approved_incarnations": dict(sorted(self.approved_incarnations.items())),
+            "installed_membership": self.installed_membership,
+            "active_membership": self.installed_membership,
+            "pending_config": None
+            if self.pending_config is None
+            else {
+                "membership_epoch": self.pending_config.membership_epoch,
+                "members_bitmap": self.pending_config.members_bitmap,
+                "effective_epoch": self.pending_config.effective_epoch,
+                "approved_incarnations": dict(sorted(self.pending_config.approved_incarnations.items())),
+            },
             "current_epoch": self.current_epoch,
             "committed_epochs": self.committed_epochs,
             "halted_epoch": self.halted_epoch,
