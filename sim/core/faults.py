@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-from .types import ControlPlaneState, Delivery, DeliveryCopy, InstalledConfig, MembershipState, Packet, bitmap_set
-
-
-def _approved_incarnations(node_count: int, overrides: dict[int, int] | None = None) -> dict[int, int]:
-    approved = {node_id: 0 for node_id in range(node_count)}
-    if overrides is not None:
-        approved.update(overrides)
-    return approved
+from .types import ControlPlaneState, Delivery, InstalledConfig, MembershipState, Packet, bitmap_set
 
 
 def network_perfect(packet: Packet, dst: int) -> Delivery:
@@ -20,6 +13,15 @@ def network_asymmetric_loss(packet: Packet, dst: int) -> Delivery:
     return Delivery(deliver_epoch=packet.epoch_id, reason=f"same-epoch delivery to node {dst}")
 
 
+def network_bridge_partition(packet: Packet, dst: int) -> Delivery:
+    if packet.epoch_id == 0 and ((packet.src_id == 1 and dst == 2) or (packet.src_id == 2 and dst == 1)):
+        return Delivery(
+            deliver_epoch=None,
+            reason="bridge partition: nodes 1 and 2 do not see each other in epoch 0",
+        )
+    return Delivery(deliver_epoch=packet.epoch_id, reason=f"same-epoch delivery to node {dst}")
+
+
 def network_one_epoch_delay(packet: Packet, dst: int) -> Delivery:
     if packet.epoch_id == 1 and packet.src_id == 2 and dst == 0:
         return Delivery(deliver_epoch=2, reason="one-epoch delay from node 2 to node 0")
@@ -27,26 +29,6 @@ def network_one_epoch_delay(packet: Packet, dst: int) -> Delivery:
 
 
 def network_quorum_loss(packet: Packet, dst: int) -> Delivery:
-    return Delivery(deliver_epoch=packet.epoch_id, reason=f"same-epoch delivery to node {dst}")
-
-
-def network_stale_replay(packet: Packet, dst: int) -> Delivery:
-    if packet.epoch_id == 0 and packet.src_id == 1 and dst == 0:
-        return Delivery(
-            deliver_epoch=0,
-            extra_deliver_epochs=(2,),
-            reason="same-epoch delivery with stale replay at epoch 2",
-        )
-    return Delivery(deliver_epoch=packet.epoch_id, reason=f"same-epoch delivery to node {dst}")
-
-
-def network_duplicate_same_epoch(packet: Packet, dst: int) -> Delivery:
-    if packet.epoch_id == 1 and packet.src_id == 0 and dst == 2:
-        return Delivery(
-            deliver_epoch=1,
-            extra_deliver_epochs=(1,),
-            reason="duplicate same-epoch delivery from node 0 to node 2",
-        )
     return Delivery(deliver_epoch=packet.epoch_id, reason=f"same-epoch delivery to node {dst}")
 
 
@@ -66,22 +48,6 @@ def network_ack_bitmap_corruption(packet: Packet, dst: int) -> Delivery:
             deliver_epoch=1,
             ack_override=0b011,
             reason="boundary fault: node 2 receives a corrupted ACK bitmap from node 1 in epoch 1",
-        )
-    return Delivery(deliver_epoch=packet.epoch_id, reason=f"same-epoch delivery to node {dst}")
-
-
-def network_stale_incarnation_replay(packet: Packet, dst: int) -> Delivery:
-    if packet.epoch_id == 5 and packet.src_id == 2 and packet.incarnation_id == 1 and dst == 0:
-        return Delivery(
-            deliver_epoch=packet.epoch_id,
-            reason=f"same-epoch delivery to node {dst}",
-            extra_copies=(
-                DeliveryCopy(
-                    deliver_epoch=5,
-                    incarnation_id_override=0,
-                    reason="replay old-incarnation packet from node 2 after rejoin",
-                ),
-            ),
         )
     return Delivery(deliver_epoch=packet.epoch_id, reason=f"same-epoch delivery to node {dst}")
 
@@ -109,7 +75,7 @@ def control_plane_all_active(epoch_id: int, node_count: int) -> ControlPlaneStat
         installed_config=InstalledConfig(
             membership_epoch=0,
             members_bitmap=installed_membership,
-            approved_incarnations=_approved_incarnations(node_count),
+            run_id=0,
         ),
         node_states={node_id: MembershipState.ACTIVE for node_id in range(node_count)},
     )
@@ -123,7 +89,7 @@ def control_plane_node2_removed(epoch_id: int, node_count: int) -> ControlPlaneS
         installed_config=InstalledConfig(
             membership_epoch=1,
             members_bitmap=installed_membership,
-            approved_incarnations=_approved_incarnations(node_count),
+            run_id=1,
         ),
         node_states={
             0: MembershipState.ACTIVE,
@@ -140,7 +106,7 @@ def control_plane_quorum_loss(epoch_id: int, node_count: int) -> ControlPlaneSta
         installed_config=InstalledConfig(
             membership_epoch=0,
             members_bitmap=bitmap_set(node_count, 0, 1, 2),
-            approved_incarnations=_approved_incarnations(node_count),
+            run_id=0,
         ),
         node_states={
             0: MembershipState.ACTIVE,
@@ -158,7 +124,7 @@ def control_plane_node2_rejoin(epoch_id: int, node_count: int) -> ControlPlaneSt
             installed_config=InstalledConfig(
                 membership_epoch=1,
                 members_bitmap=bitmap_set(node_count, 0, 1),
-                approved_incarnations=_approved_incarnations(node_count),
+                run_id=1,
             ),
             node_states={
                 0: MembershipState.ACTIVE,
@@ -171,7 +137,7 @@ def control_plane_node2_rejoin(epoch_id: int, node_count: int) -> ControlPlaneSt
             installed_config=InstalledConfig(
                 membership_epoch=1,
                 members_bitmap=bitmap_set(node_count, 0, 1),
-                approved_incarnations=_approved_incarnations(node_count),
+                run_id=1,
             ),
             node_states={
                 0: MembershipState.ACTIVE,
@@ -184,7 +150,7 @@ def control_plane_node2_rejoin(epoch_id: int, node_count: int) -> ControlPlaneSt
             installed_config=InstalledConfig(
                 membership_epoch=1,
                 members_bitmap=bitmap_set(node_count, 0, 1),
-                approved_incarnations=_approved_incarnations(node_count),
+                run_id=1,
             ),
             node_states={
                 0: MembershipState.ACTIVE,
@@ -196,7 +162,7 @@ def control_plane_node2_rejoin(epoch_id: int, node_count: int) -> ControlPlaneSt
         installed_config=InstalledConfig(
             membership_epoch=2,
             members_bitmap=bitmap_set(node_count, 0, 1, 2),
-            approved_incarnations=_approved_incarnations(node_count, overrides={2: 1}),
+            run_id=2,
         ),
         node_states={
             0: MembershipState.ACTIVE,

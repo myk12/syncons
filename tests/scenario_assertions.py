@@ -9,8 +9,8 @@ def run_named_scenario(name: str, *, node_count: int = 3, epochs: int | None = N
     run = ClusterRun(
         node_count=node_count,
         epochs=spec.epochs if epochs is None else epochs,
-        fault_model=spec.fault_model,
-        activity_model=spec.activity_model,
+        network_fault_model=spec.network_fault_model,
+        node_fault_model=spec.node_fault_model,
         control_plane_model=spec.control_plane_model,
     )
     return run.run()

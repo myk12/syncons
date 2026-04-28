@@ -39,10 +39,15 @@ class MembershipState(str, Enum):
 class Packet:
     epoch_id: int
     src_id: int
-    incarnation_id: int
-    membership_epoch: int
+    run_id: int
     ack_bitmap: int
     payload: str
+
+
+@dataclass(frozen=True)
+class OutboundPacket:
+    packet: Packet
+    destinations: tuple[int, ...]
 
 
 @dataclass
@@ -65,8 +70,7 @@ class DeliveryCopy:
     deliver_epoch: int
     reason: str = "duplicate deliver"
     packet_epoch_override: int | None = None
-    incarnation_id_override: int | None = None
-    membership_epoch_override: int | None = None
+    run_id_override: int | None = None
     ack_override: int | None = None
     payload_override: str | None = None
 
@@ -76,8 +80,7 @@ class Delivery:
     deliver_epoch: int | None
     reason: str = "deliver"
     packet_epoch_override: int | None = None
-    incarnation_id_override: int | None = None
-    membership_epoch_override: int | None = None
+    run_id_override: int | None = None
     ack_override: int | None = None
     payload_override: str | None = None
     extra_deliver_epochs: tuple[int, ...] = ()
@@ -93,7 +96,7 @@ NodeFaultModel = Callable[[int, int], bool]
 class InstalledConfig:
     membership_epoch: int
     members_bitmap: int
-    approved_incarnations: dict[int, int] = field(default_factory=dict)
+    run_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -101,7 +104,7 @@ class PendingConfig:
     membership_epoch: int
     members_bitmap: int
     effective_epoch: int
-    approved_incarnations: dict[int, int] = field(default_factory=dict)
+    run_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -124,8 +127,8 @@ class ControlPlaneState:
         return self.installed_membership
 
     @property
-    def approved_incarnations(self) -> dict[int, int]:
-        return self.installed_config.approved_incarnations
+    def run_id(self) -> int:
+        return self.installed_config.run_id
 
 
 ControlPlaneModel = Callable[[int, int], ControlPlaneState]

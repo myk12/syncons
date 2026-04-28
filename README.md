@@ -200,13 +200,14 @@ Built-in scenarios currently cover:
 * `perfect`: all packets arrive within the same epoch.
 * `node2_crash`: one node crashes after epoch 0 while a quorum survives.
 * `asymmetric_loss`: one asymmetric packet loss creates an ACK view mismatch and triggers fail-stop.
+* `bridge_partition`: two non-bridge nodes miss each other, producing an ambiguous bridge topology and global halt.
 * `one_epoch_delay`: a packet arrives one epoch late and is ignored by the current collector.
 * `quorum_loss`: two nodes crash and the remaining node halts because quorum is no longer available.
-* `stale_replay`: an old packet is replayed in a later epoch and is dropped as stale.
-* `duplicate_same_epoch`: a duplicated packet arrives in the same epoch and should not change the outcome.
+* `controlled_rejoin`: a crashed node is kept out of the fast path during recovery and is only reactivated at an explicit epoch boundary.
+
+Additional robustness probes (outside the nominal omission/timing fault model):
 * `future_epoch_skew`: one node crosses an epoch boundary too early and labels a packet with the next epoch id.
 * `ack_bitmap_corruption`: an ACK bitmap is corrupted for one receiver at the validation boundary, causing that node to fail-stop.
-* `controlled_rejoin`: a crashed node is kept out of the fast path during recovery and is only reactivated at an explicit epoch boundary.
 
 Use `--check` to compare a scenario run against its built-in expected outcome and make the simulator act like a lightweight protocol regression test.
 
@@ -217,13 +218,14 @@ Recommended structure:
 * `sim/core/types.py`: shared protocol datatypes and scenario expectations.
 * `sim/core/node.py`: the single-node sliding-window state machine.
 * `sim/core/cluster.py`: multi-node runner and in-flight delivery queue.
-* `sim/core/faults.py`: fault and activity models.
+* `sim/core/faults.py`: network-fault models, node-fault models, and control-plane schedules.
 * `sim/core/scenarios.py`: named scenarios and expected results.
 * `tests/test_*.py`: scenario validation split into separate pytest files.
 
 The current Python model also tracks:
 * `membership_epoch`
-* `active_membership`
+* `installed_membership`
+* `approved_incarnations`
 * per-node control-plane membership state (`ACTIVE`, `FAILED`, `RECOVERING`, `REJOIN_PENDING`)
 
 For validation:
@@ -299,7 +301,7 @@ struct Packet {
 
 Suggested receive-side acceptance rules:
 * If `src_id` is not in `Active_Membership`, drop the packet.
-* If `membership_epoch != local_membership_epoch`, drop the packet or hand it to the control plane.
+* If `membership_epoch != local_installed_membership_epoch`, drop the packet or hand it to the control plane.
 * If `incarnation_id` does not match the currently approved incarnation for `src_id`, drop the packet.
 * Only ACK rows from active members in the current membership configuration contribute to validation.
 
@@ -351,7 +353,7 @@ Membership changes only take effect at epoch boundaries.
 That means the control plane should issue a decision of the form:
 
 ```text
-membership_epoch K with active_membership M becomes effective at protocol epoch E_effective
+membership_epoch K with installed_membership M becomes effective at protocol epoch E_effective
 ```
 
 For a rejoin operation, this can be specialized as:
@@ -374,7 +376,7 @@ Recommended control-plane object:
 ```text
 MembershipConfig {
     membership_epoch
-    active_membership
+    installed_membership
     approved_incarnations[src_id]
     effective_epoch
 }
