@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from sim.core.node import Node
-from sim.core.types import EpochStage
+from sim.protocol.node import Node
+from sim.protocol.types import RoundStage
 
 
-def stage(rows: dict[int, int], *, node_count: int = 3) -> EpochStage:
-    return EpochStage(
-        epoch_id=0,
+def stage(rows: dict[int, int], *, node_count: int = 3) -> RoundStage:
+    return RoundStage(
+        round_id=0,
         membership_epoch=0,
-        membership_bitmap=(1 << node_count) - 1,
-        my_bitmap=1,
-        ack_matrix=rows,
+        installed_membership=(1 << node_count) - 1,
+        sound_bitmap=1,
+        sound_matrix=rows,
     )
 
 
@@ -36,7 +36,7 @@ def test_three_node_canonical_clean_shapes(
 ) -> None:
     node = Node(node_id=node_id, node_count=3)
 
-    assert node._candidate_quorum(stage(rows)) == expected
+    assert node._sound_set(stage(rows)) == expected
 
 
 @pytest.mark.parametrize(
@@ -54,26 +54,26 @@ def test_three_node_non_canonical_shapes_halt(
 ) -> None:
     node = Node(node_id=node_id, node_count=3)
 
-    assert node._candidate_quorum(stage(rows)) is None
+    assert node._sound_set(stage(rows)) is None
 
 
-def test_witness_core_can_differ_from_certified_row_bits() -> None:
+def test_sound_set_can_differ_from_agreed_row_bits() -> None:
     node = Node(node_id=0, node_count=3)
 
-    assert node._candidate_quorum(stage({0: 0b111, 1: 0b000, 2: 0b111})) == 0b101
+    assert node._sound_set(stage({0: 0b111, 1: 0b000, 2: 0b111})) == 0b101
 
 
 def test_nonzero_row_must_self_include() -> None:
     node = Node(node_id=0, node_count=3)
 
-    assert node._candidate_quorum(stage({0: 0b111, 1: 0b101, 2: 0b111})) is None
+    assert node._sound_set(stage({0: 0b111, 1: 0b101, 2: 0b111})) is None
 
 
 def test_five_node_full_membership_canonical_shape() -> None:
     node = Node(node_id=3, node_count=5)
     rows = {idx: full_membership(5) for idx in range(5)}
 
-    assert node._candidate_quorum(stage(rows, node_count=5)) == 0b11111
+    assert node._sound_set(stage(rows, node_count=5)) == 0b11111
 
 
 def test_five_node_degraded_canonical_shape() -> None:
@@ -86,7 +86,7 @@ def test_five_node_degraded_canonical_shape() -> None:
         4: 0b00000,
     }
 
-    assert node._candidate_quorum(stage(rows, node_count=5)) == 0b01011
+    assert node._sound_set(stage(rows, node_count=5)) == 0b01011
 
 
 def test_five_node_degraded_shape_must_include_local_node() -> None:
@@ -99,7 +99,7 @@ def test_five_node_degraded_shape_must_include_local_node() -> None:
         4: 0b00000,
     }
 
-    assert node._candidate_quorum(stage(rows, node_count=5)) is None
+    assert node._sound_set(stage(rows, node_count=5)) is None
 
 
 def test_five_node_degraded_shape_requires_exact_rows() -> None:
@@ -112,10 +112,10 @@ def test_five_node_degraded_shape_requires_exact_rows() -> None:
         4: 0b00000,
     }
 
-    assert node._candidate_quorum(stage(rows, node_count=5)) is None
+    assert node._sound_set(stage(rows, node_count=5)) is None
 
 
-def test_five_node_witness_core_ignores_external_nonzero_rows() -> None:
+def test_five_node_sound_set_ignores_external_nonzero_rows() -> None:
     node = Node(node_id=1, node_count=5)
     rows = {
         0: 0b01011,
@@ -125,4 +125,4 @@ def test_five_node_witness_core_ignores_external_nonzero_rows() -> None:
         4: 0b00000,
     }
 
-    assert node._candidate_quorum(stage(rows, node_count=5)) == 0b01011
+    assert node._sound_set(stage(rows, node_count=5)) == 0b01011

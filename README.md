@@ -181,7 +181,9 @@ epoch 2: survivor validates epoch 0 with C=1, Q=2 -> FAIL_STOP
 This is why the protocol checks the ACK matrix for the validation window, not just the original proposal bitmap.
 
 ## 6. Python Reference Simulator
-The repository also contains a protocol-level reference model. The protocol implementation now lives under `sim/core/`, while `sim/syncons.py` and `sim/run_scenario.py` are thin CLI entrypoints.
+The repository also contains a protocol-level reference model. The simulator is now organized by responsibility under `sim/`:
+`sim/protocol/`, `sim/runtime/`, `sim/control/`, and `sim/scenarios/`. The
+files `sim/syncons.py` and `sim/run_scenario.py` remain thin CLI entrypoints.
 
 Example runs:
 
@@ -215,11 +217,11 @@ Recommended structure:
 * `fpga/rtl/`: FPGA RTL modules.
 * `fpga/tb/`: FPGA-oriented Verilog testbenches.
 * `fpga/Makefile`: FPGA/RTL simulation entrypoint.
-* `sim/core/types.py`: shared protocol datatypes and scenario expectations.
-* `sim/core/node.py`: the single-node sliding-window state machine.
-* `sim/core/cluster.py`: multi-node runner and in-flight delivery queue.
-* `sim/core/faults.py`: network-fault models, node-fault models, and control-plane schedules.
-* `sim/core/scenarios.py`: named scenarios and expected results.
+* `sim/protocol/types.py`: shared protocol datatypes and scenario expectations.
+* `sim/protocol/node.py`: the single-node sliding-window state machine.
+* `sim/runtime/cluster.py`: multi-node runner and in-flight delivery queue.
+* `sim/scenarios/faults.py`: network-fault models, node-fault models, and control-plane schedules.
+* `sim/scenarios/builtin.py`: named scenarios and expected results.
 * `tests/test_*.py`: scenario validation split into separate pytest files.
 
 The current Python model also tracks:

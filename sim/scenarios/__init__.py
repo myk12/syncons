@@ -1,0 +1,13 @@
+from .builtin import (
+    AUXILIARY_SCENARIOS,
+    OUT_OF_MODEL_SCENARIOS,
+    PRIMARY_SCENARIOS,
+    SCENARIOS,
+)
+
+__all__ = [
+    "AUXILIARY_SCENARIOS",
+    "OUT_OF_MODEL_SCENARIOS",
+    "PRIMARY_SCENARIOS",
+    "SCENARIOS",
+]

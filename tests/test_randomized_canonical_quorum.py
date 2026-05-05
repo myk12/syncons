@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import random
-from sim.core.node import Node
-from sim.core.types import EpochStage
+from sim.protocol.node import Node
+from sim.protocol.types import RoundStage
 
 
-def make_stage(rows: dict[int, int], *, node_count: int) -> EpochStage:
-    return EpochStage(
-        epoch_id=0,
+def make_stage(rows: dict[int, int], *, node_count: int) -> RoundStage:
+    return RoundStage(
+        round_id=0,
         membership_epoch=0,
-        membership_bitmap=(1 << node_count) - 1,
-        my_bitmap=1,
-        ack_matrix=rows,
+        installed_membership=(1 << node_count) - 1,
+        sound_bitmap=1,
+        sound_matrix=rows,
     )
 
 
@@ -56,7 +56,7 @@ def test_random_observation_matrices_match_reference_checker() -> None:
                 rows = {member: rng.choice(all_rows) for member in range(node_count)}
                 stage = make_stage(rows, node_count=node_count)
 
-                assert node._candidate_quorum(stage) == reference_candidate(
+                assert node._sound_set(stage) == reference_candidate(
                     rows,
                     node_id=node_id,
                     node_count=node_count,

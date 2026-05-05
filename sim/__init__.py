@@ -1,48 +1,66 @@
-from .cli import evaluate_expectation, main, text_summary
-from .cluster import ClusterRun
-from .node import Node, default_payload
-from .scenarios import SCENARIOS
-from .types import (
+from .protocol.node import Node, default_payload
+from .protocol.types import (
+    CommittedRoundEntry,
     ControlPlaneState,
     Delivery,
     DeliveryCopy,
-    EpochStage,
+    HaltRecord,
+    RoundStage,
     InstalledConfig,
     MembershipState,
     NetworkFaultModel,
-    NodeStatus,
     NodeFaultModel,
+    NodeStatus,
+    OutboundPacket,
     Packet,
     PendingConfig,
+    PendingConfigStatus,
+    RepairLog,
+    RepairSnapshot,
     ScenarioExpectation,
     ScenarioSpec,
+    SimulationTiming,
     bitmap_members,
     bitmap_set,
     bitmap_text,
+    format_duration_ns,
+    parse_duration_ns,
 )
+from .runtime.cli import evaluate_expectation, main, text_summary
+from .runtime.cluster import ClusterRun
+from .scenarios.builtin import SCENARIOS
 
 __all__ = [
+    "CommittedRoundEntry",
     "ClusterRun",
     "ControlPlaneState",
     "Delivery",
     "DeliveryCopy",
-    "EpochStage",
+    "HaltRecord",
+    "RoundStage",
     "InstalledConfig",
     "MembershipState",
     "NetworkFaultModel",
     "Node",
-    "NodeStatus",
     "NodeFaultModel",
+    "NodeStatus",
+    "OutboundPacket",
     "Packet",
     "PendingConfig",
+    "PendingConfigStatus",
+    "RepairLog",
+    "RepairSnapshot",
     "SCENARIOS",
     "ScenarioExpectation",
     "ScenarioSpec",
+    "SimulationTiming",
     "bitmap_members",
     "bitmap_set",
     "bitmap_text",
     "default_payload",
     "evaluate_expectation",
+    "format_duration_ns",
     "main",
+    "parse_duration_ns",
     "text_summary",
 ]

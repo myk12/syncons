@@ -9,14 +9,13 @@ from dataclasses import dataclass, asdict
 from typing import Any
 
 from .cluster import ClusterRun
-from .faults import control_plane_all_active
-from .types import Delivery, NetworkFaultModel, NodeFaultModel, Packet
+from ..protocol.types import Delivery, NetworkFaultModel, NodeFaultModel, Packet
 
 
 @dataclass(frozen=True)
 class RandomFaultConfig:
     node_count: int = 3
-    epochs: int = 8
+    rounds: int = 8
     trials: int = 100
     seed: int = 20260425
     packet_loss: float = 0.0
@@ -29,27 +28,27 @@ class RandomFaultConfig:
 def committed_value(entry: dict[str, Any]) -> tuple[Any, Any, tuple[tuple[Any, Any], ...]]:
     return (
         entry["membership_epoch"],
-        entry["bitmap"],
+        entry["commit_set"],
         tuple(sorted(entry["proposals"].items())),
     )
 
 
 def safety_violations(result: dict[str, Any]) -> list[str]:
     violations: list[str] = []
-    committed_by_epoch: dict[int, tuple[Any, Any, tuple[tuple[Any, Any], ...]]] = {}
+    committed_by_round: dict[int, tuple[Any, Any, tuple[tuple[Any, Any], ...]]] = {}
 
     for node in result["nodes"]:
-        epochs = [entry["epoch"] for entry in node["committed_epochs"]]
-        if epochs != list(range(len(epochs))):
-            violations.append(f"node {node['node_id']} committed non-prefix epochs {epochs}")
+        rounds = [entry["round"] for entry in node["committed_rounds"]]
+        if rounds != list(range(len(rounds))):
+            violations.append(f"node {node['node_id']} committed non-prefix rounds {rounds}")
 
-        for entry in node["committed_epochs"]:
-            epoch = int(entry["epoch"])
+        for entry in node["committed_rounds"]:
+            round_id = int(entry["round"])
             value = committed_value(entry)
-            previous = committed_by_epoch.setdefault(epoch, value)
+            previous = committed_by_round.setdefault(round_id, value)
             if value != previous:
                 violations.append(
-                    f"conflicting commit for epoch {epoch}: "
+                    f"conflicting commit for round {round_id}: "
                     f"node {node['node_id']} committed {value}, previous {previous}"
                 )
 
@@ -63,28 +62,28 @@ def _random_network_fault_model(
     def model(packet: Packet, dst: int) -> Delivery:
         roll = rng.random()
         if roll < config.packet_loss:
-            return Delivery(deliver_epoch=None, reason="random packet loss")
+            return Delivery(deliver_round=None, reason="random packet loss")
 
         roll -= config.packet_loss
         if roll < config.packet_delay:
             return Delivery(
-                deliver_epoch=packet.epoch_id + 1,
-                reason="random one-epoch delay",
+                deliver_round=packet.round_id + 1,
+                reason="random one-round delay",
             )
 
-        ack_override = None
+        sound_override = None
         if rng.random() < config.ack_corruption:
-            ack_override = rng.randrange(1 << config.node_count)
+            sound_override = rng.randrange(1 << config.node_count)
 
-        extra_deliver_epochs = ()
+        extra_deliver_rounds = ()
         if rng.random() < config.duplicate:
-            extra_deliver_epochs = (packet.epoch_id,)
+            extra_deliver_rounds = (packet.round_id,)
 
         return Delivery(
-            deliver_epoch=packet.epoch_id,
+            deliver_round=packet.round_id,
             reason="random same-epoch delivery",
-            ack_override=ack_override,
-            extra_deliver_epochs=extra_deliver_epochs,
+            sound_override=sound_override,
+            extra_deliver_rounds=extra_deliver_rounds,
         )
 
     return model
@@ -94,16 +93,16 @@ def _random_node_fault_model(
     rng: random.Random,
     config: RandomFaultConfig,
 ) -> NodeFaultModel:
-    crash_epochs: dict[int, int] = {}
+    crash_rounds: dict[int, int] = {}
     for node_id in range(config.node_count):
-        for epoch in range(1, config.epochs):
+        for round_id in range(1, config.rounds):
             if rng.random() < config.node_crash:
-                crash_epochs[node_id] = epoch
+                crash_rounds[node_id] = round_id
                 break
 
-    def model(node_id: int, epoch_id: int) -> bool:
-        crash_epoch = crash_epochs.get(node_id)
-        return crash_epoch is None or epoch_id < crash_epoch
+    def model(node_id: int, round_id: int) -> bool:
+        crash_round = crash_rounds.get(node_id)
+        return crash_round is None or round_id < crash_round
 
     return model
 
@@ -112,26 +111,25 @@ def run_random_trial(config: RandomFaultConfig, trial_seed: int) -> dict[str, An
     rng = random.Random(trial_seed)
     run = ClusterRun(
         node_count=config.node_count,
-        epochs=config.epochs,
+        rounds=config.rounds,
         network_fault_model=_random_network_fault_model(rng, config),
         node_fault_model=_random_node_fault_model(rng, config),
-        control_plane_model=control_plane_all_active,
     )
     return run.run()
 
 
 def summarize_trial(result: dict[str, Any]) -> dict[str, Any]:
     statuses = [node["status"] for node in result["nodes"]]
-    committed_counts = [len(node["committed_epochs"]) for node in result["nodes"]]
-    halt_epochs = [
-        node["halted_epoch"]
+    committed_counts = [len(node["committed_rounds"]) for node in result["nodes"]]
+    halt_rounds = [
+        node["halted_round"]
         for node in result["nodes"]
-        if node["status"] == "HALTED" and node["halted_epoch"] is not None
+        if node["status"] == "HALTED" and node["halted_round"] is not None
     ]
-    crash_epochs = [
-        node["halted_epoch"]
+    crash_rounds = [
+        node["halted_round"]
         for node in result["nodes"]
-        if node["status"] == "CRASHED" and node["halted_epoch"] is not None
+        if node["status"] == "CRASHED" and node["halted_round"] is not None
     ]
 
     return {
@@ -140,8 +138,8 @@ def summarize_trial(result: dict[str, Any]) -> dict[str, Any]:
         "max_committed": max(committed_counts, default=0),
         "halted_nodes": statuses.count("HALTED"),
         "crashed_nodes": statuses.count("CRASHED"),
-        "first_halt_epoch": min(halt_epochs) if halt_epochs else None,
-        "first_crash_epoch": min(crash_epochs) if crash_epochs else None,
+        "first_halt_round": min(halt_rounds) if halt_rounds else None,
+        "first_crash_round": min(crash_rounds) if crash_rounds else None,
         "safety_violations": safety_violations(result),
     }
 
@@ -181,7 +179,7 @@ def run_campaign(config: RandomFaultConfig) -> dict[str, Any]:
             "halted_runs": halted_runs,
             "crashed_runs": crashed_runs,
             "all_running_runs": all_running_runs,
-            "avg_committed_epochs_per_node": total_committed / total_node_runs
+            "avg_committed_rounds_per_node": total_committed / total_node_runs
             if total_node_runs
             else 0.0,
         },
@@ -211,7 +209,7 @@ def sweep_campaigns(
                 "parameter": parameter,
                 "value": value,
                 "node_count": config.node_count,
-                "epochs": config.epochs,
+                "rounds": config.rounds,
                 "trials": config.trials,
                 "seed": config.seed,
                 "packet_loss": config.packet_loss,
@@ -225,7 +223,7 @@ def sweep_campaigns(
                 "all_running_runs": summary["all_running_runs"],
                 "halt_rate": summary["halted_runs"] / config.trials if config.trials else 0.0,
                 "all_running_rate": summary["all_running_runs"] / config.trials if config.trials else 0.0,
-                "avg_committed_epochs_per_node": summary["avg_committed_epochs_per_node"],
+                "avg_committed_rounds_per_node": summary["avg_committed_rounds_per_node"],
             }
         )
 
@@ -235,7 +233,7 @@ def sweep_campaigns(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run randomized SynCons fault campaigns.")
     parser.add_argument("--nodes", type=int, default=3)
-    parser.add_argument("--epochs", type=int, default=8)
+    parser.add_argument("--rounds", "--epochs", dest="rounds", type=int, default=8)
     parser.add_argument("--trials", type=int, default=100)
     parser.add_argument("--seed", type=int, default=20260425)
     parser.add_argument("--packet-loss", type=float, default=0.0)
@@ -270,7 +268,7 @@ def text_summary(report: dict[str, Any]) -> str:
     return "\n".join(
         [
             "Random SynCons fault campaign",
-            f"nodes={config['node_count']} epochs={config['epochs']} trials={config['trials']} seed={config['seed']}",
+            f"nodes={config['node_count']} rounds={config['rounds']} trials={config['trials']} seed={config['seed']}",
             (
                 "faults="
                 + f"loss:{config['packet_loss']} "
@@ -283,7 +281,7 @@ def text_summary(report: dict[str, Any]) -> str:
             f"halted_runs={summary['halted_runs']}",
             f"crashed_runs={summary['crashed_runs']}",
             f"all_running_runs={summary['all_running_runs']}",
-            f"avg_committed_epochs_per_node={summary['avg_committed_epochs_per_node']:.2f}",
+            f"avg_committed_rounds_per_node={summary['avg_committed_rounds_per_node']:.2f}",
         ]
     )
 
@@ -292,7 +290,7 @@ def main() -> int:
     args = parse_args()
     config = RandomFaultConfig(
         node_count=args.nodes,
-        epochs=args.epochs,
+        rounds=args.rounds,
         trials=args.trials,
         seed=args.seed,
         packet_loss=args.packet_loss,

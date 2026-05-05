@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from sim.core.random_campaign import RandomFaultConfig, run_campaign, sweep_campaigns
+from sim.runtime.random_campaign import RandomFaultConfig, run_campaign, sweep_campaigns
 
 
 def test_random_campaign_no_fault_sanity() -> None:
     report = run_campaign(
         RandomFaultConfig(
-            epochs=6,
+            rounds=6,
             trials=10,
             seed=1,
         )
@@ -16,13 +16,13 @@ def test_random_campaign_no_fault_sanity() -> None:
     assert report["summary"]["halted_runs"] == 0
     assert report["summary"]["crashed_runs"] == 0
     assert report["summary"]["all_running_runs"] == 10
-    assert report["summary"]["avg_committed_epochs_per_node"] == 4.0
+    assert report["summary"]["avg_committed_rounds_per_node"] == 4.0
 
 
 def test_random_campaign_faults_preserve_safety_invariant() -> None:
     report = run_campaign(
         RandomFaultConfig(
-            epochs=8,
+            rounds=8,
             trials=20,
             seed=2,
             packet_loss=0.02,
@@ -39,7 +39,7 @@ def test_random_campaign_faults_preserve_safety_invariant() -> None:
 def test_random_campaign_sweep_outputs_plot_ready_rows() -> None:
     rows = sweep_campaigns(
         RandomFaultConfig(
-            epochs=6,
+            rounds=6,
             trials=5,
             seed=3,
         ),
@@ -52,4 +52,4 @@ def test_random_campaign_sweep_outputs_plot_ready_rows() -> None:
     assert all(row["safety_violation_runs"] == 0 for row in rows)
     assert all("halt_rate" in row for row in rows)
     assert rows[0]["all_running_rate"] == 1.0
-    assert rows[0]["avg_committed_epochs_per_node"] == 4.0
+    assert rows[0]["avg_committed_rounds_per_node"] == 4.0
