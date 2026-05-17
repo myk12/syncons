@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable, TypeAlias
+
+
+JsonDict: TypeAlias = dict[str, Any]
 
 
 def parse_duration_ns(text: str) -> int:
@@ -72,8 +75,8 @@ class PendingConfigStatus(str, Enum):
 @dataclass(frozen=True)
 class SimulationTiming:
     round_length_ns: int = 4_000
-    halt_report_delay_ns: int = 10_000
-    cp_collection_delay_ns: int = 20_000
+    halt_report_delay_ns: int = 10_000      # time for a node to observe a failed round and interru
+    cp_collection_delay_ns: int = 20_000    # recovery episode formation	
     cp_decision_delay_ns: int = 15_000
     repair_delay_ns: int = 50_000
     install_delay_ns: int = 20_000
@@ -107,20 +110,13 @@ class RoundStage:
 
 
 @dataclass(frozen=True)
-class CommittedRoundEntry:
+class CommittedRound:
     round: int
     membership_epoch: int
-    installed_membership: int
     commit_set: int
-    members: tuple[int, ...]
-    agreed_row: int
-    sound_set: int
-    observation_rows: dict[int, int]
     proposals: dict[int, str]
-    commit_time_ns: int | None = None
-    app_delivery_time_ns: int | None = None
 
-    def digest_projection(self) -> dict[str, object]:
+    def digest_projection(self) -> JsonDict:
         return {
             "round": self.round,
             "membership_epoch": self.membership_epoch,
@@ -128,16 +124,29 @@ class CommittedRoundEntry:
             "proposals": dict(self.proposals),
         }
 
-    def to_snapshot(self) -> dict[str, object]:
+
+@dataclass(frozen=True)
+class CommittedRoundRecord:
+    round: int
+    membership_epoch: int
+    commit_set: int
+    proposals: dict[int, str]
+    commit_time_ns: int | None = None
+    app_delivery_time_ns: int | None = None
+
+    def digest_projection(self) -> JsonDict:
         return {
             "round": self.round,
             "membership_epoch": self.membership_epoch,
-            "installed_membership": self.installed_membership,
             "commit_set": self.commit_set,
-            "members": list(self.members),
-            "agreed_row": self.agreed_row,
-            "sound_set": self.sound_set,
-            "observation_rows": dict(self.observation_rows),
+            "proposals": dict(self.proposals),
+        }
+
+    def to_snapshot(self) -> JsonDict:
+        return {
+            "round": self.round,
+            "membership_epoch": self.membership_epoch,
+            "commit_set": self.commit_set,
             "proposals": dict(self.proposals),
             **(
                 {}
@@ -152,16 +161,11 @@ class CommittedRoundEntry:
         }
 
     @classmethod
-    def from_snapshot(cls, snapshot: dict[str, object]) -> "CommittedRoundEntry":
+    def from_snapshot(cls, snapshot: JsonDict) -> "CommittedRoundRecord":
         return cls(
             round=int(snapshot["round"]),
             membership_epoch=int(snapshot["membership_epoch"]),
-            installed_membership=int(snapshot["installed_membership"]),
             commit_set=int(snapshot["commit_set"]),
-            members=tuple(int(member) for member in snapshot["members"]),
-            agreed_row=int(snapshot["agreed_row"]),
-            sound_set=int(snapshot["sound_set"]),
-            observation_rows={int(k): int(v) for k, v in dict(snapshot["observation_rows"]).items()},
             proposals={int(k): str(v) for k, v in dict(snapshot["proposals"]).items()},
             commit_time_ns=None if "commit_time_ns" not in snapshot else int(snapshot["commit_time_ns"]),
             app_delivery_time_ns=None if "app_delivery_time_ns" not in snapshot else int(snapshot["app_delivery_time_ns"]),
@@ -172,37 +176,53 @@ class CommittedRoundEntry:
         *,
         commit_time_ns: int | None = None,
         app_delivery_time_ns: int | None = None,
-    ) -> "CommittedRoundEntry":
-        return CommittedRoundEntry(
+    ) -> "CommittedRoundRecord":
+        return CommittedRoundRecord(
             round=self.round,
             membership_epoch=self.membership_epoch,
-            installed_membership=self.installed_membership,
             commit_set=self.commit_set,
-            members=self.members,
-            agreed_row=self.agreed_row,
-            sound_set=self.sound_set,
-            observation_rows=dict(self.observation_rows),
             proposals=dict(self.proposals),
             commit_time_ns=self.commit_time_ns if commit_time_ns is None else commit_time_ns,
             app_delivery_time_ns=self.app_delivery_time_ns if app_delivery_time_ns is None else app_delivery_time_ns,
         )
 
+    @classmethod
+    def from_committed_round(
+        cls,
+        committed: CommittedRound,
+        *,
+        commit_time_ns: int | None = None,
+        app_delivery_time_ns: int | None = None,
+    ) -> "CommittedRoundRecord":
+        return cls(
+            round=committed.round,
+            membership_epoch=committed.membership_epoch,
+            commit_set=committed.commit_set,
+            proposals=dict(committed.proposals),
+            commit_time_ns=commit_time_ns,
+            app_delivery_time_ns=app_delivery_time_ns,
+        )
+
+@dataclass(frozen=True)
+class NodeRoundResult:
+    outbound: OutboundPacket | None
+    new_commits: tuple[CommittedRound, ...]
 
 @dataclass(frozen=True)
 class RepairLog:
-    entries: tuple[CommittedRoundEntry, ...] = ()
+    entries: tuple[CommittedRoundRecord, ...] = ()
 
     def __len__(self) -> int:
         return len(self.entries)
 
-    def to_snapshot(self) -> tuple[dict[str, object], ...]:
+    def to_snapshot(self) -> tuple[JsonDict, ...]:
         return tuple(entry.to_snapshot() for entry in self.entries)
 
 
 @dataclass(frozen=True)
 class RepairSnapshot:
     node_id: int
-    committed_rounds: tuple[CommittedRoundEntry, ...]
+    committed_rounds: tuple[CommittedRoundRecord, ...]
 
 
 @dataclass(frozen=True)
@@ -220,7 +240,7 @@ class HaltRecord:
     log_digest: str
     halt_reason: str
 
-    def to_snapshot(self) -> dict[str, object]:
+    def to_snapshot(self) -> JsonDict:
         return {
             "failed_round": self.failed_round,
             "membership_epoch": self.membership_epoch,
@@ -309,7 +329,7 @@ class ControlPlaneState:
 
 
 @dataclass(frozen=True)
-class ControlPlaneTransaction:
+class ControlPlaneUpdate:
     installed_config: InstalledConfig
     membership_state: MembershipState
     pending_config: PendingConfig | None = None
@@ -322,7 +342,7 @@ class ScenarioExpectation:
     committed_rounds: tuple[tuple[int, ...], ...]
     halted_rounds: tuple[int | None, ...]
 
-    def check(self, result: dict[str, object]) -> list[str]:
+    def check(self, result: JsonDict) -> list[str]:
         failures: list[str] = []
         nodes = result["nodes"]
 

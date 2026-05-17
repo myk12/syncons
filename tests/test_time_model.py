@@ -30,10 +30,6 @@ def test_result_carries_timing_and_control_plane_event_metadata() -> None:
 
     assert result["timing"]["round_length_ns"] == 4_000
     assert result["simulated_time_ns"] == 16_000
-    assert result["round_trace"][0]["start_time_ns"] == 0
-    assert result["round_trace"][0]["end_time_ns"] == 4_000
-    assert result["round_trace"][1]["start_time_ns"] == 4_000
-    assert result["round_trace"][1]["end_time_ns"] == 8_000
 
     halt_events = [
         event for event in result["control_plane_events"] if event["kind"] == "NodeHalted"

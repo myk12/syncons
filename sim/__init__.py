@@ -1,6 +1,7 @@
 from .protocol.node import Node, default_payload
 from .protocol.types import (
-    CommittedRoundEntry,
+    CommittedRound,
+    CommittedRoundRecord,
     ControlPlaneState,
     Delivery,
     DeliveryCopy,
@@ -31,7 +32,8 @@ from .runtime.cluster import ClusterRun
 from .scenarios.builtin import SCENARIOS
 
 __all__ = [
-    "CommittedRoundEntry",
+    "CommittedRound",
+    "CommittedRoundRecord",
     "ClusterRun",
     "ControlPlaneState",
     "Delivery",

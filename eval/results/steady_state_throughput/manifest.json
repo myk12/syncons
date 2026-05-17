@@ -1,0 +1,32 @@
+{
+  "timing_profile": "paper-baseline",
+  "sweeps": "steady",
+  "files": [
+    "eval/results/steady_state_throughput/steady_state_throughput.csv"
+  ],
+  "steady_rounds": 5000,
+  "recovery_rounds": 1500,
+  "steady_values_ns": [
+    2000,
+    4000,
+    8000
+  ],
+  "steady_node_counts": [
+    3,
+    5
+  ],
+  "recovery_values_ns": [
+    500000,
+    1000000,
+    2000000,
+    4000000
+  ],
+  "base_round_length_ns": 4000,
+  "base_repair_delay_ns": 2000000,
+  "base_install_delay_ns": 1000000,
+  "halt_report_delay_ns": 100000,
+  "cp_collection_delay_ns": 1000000,
+  "cp_decision_delay_ns": 500000,
+  "reentry_delay_ns": 250000,
+  "app_delivery_delay_ns": 5000
+}

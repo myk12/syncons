@@ -9,11 +9,12 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sim.core.random_campaign import RandomFaultConfig, sweep_campaigns
+from sim.protocol.types import JsonDict
+from sim.runtime.random_campaign import RandomFaultConfig, sweep_campaigns
 
 
 DEFAULT_VALUES = [0.0, 0.001, 0.005, 0.01, 0.02, 0.05]
@@ -26,7 +27,7 @@ DEFAULT_PRESETS = [
 ]
 
 
-def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+def write_csv(path: Path, rows: list[JsonDict]) -> None:
     if not rows:
         raise ValueError(f"no rows to write for {path}")
     with path.open("w", newline="") as output:
@@ -40,10 +41,10 @@ def parse_values(raw: str) -> list[float]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate APSys evaluation sweep CSVs.")
+    parser = argparse.ArgumentParser(description="Generate SynCons evaluation sweep CSVs.")
     parser.add_argument("--out", type=Path, default=Path("eval/results/random_sweeps"))
     parser.add_argument("--nodes", type=int, default=3)
-    parser.add_argument("--epochs", type=int, default=8)
+    parser.add_argument("--rounds", "--epochs", dest="rounds", type=int, default=8)
     parser.add_argument("--trials", type=int, default=200)
     parser.add_argument("--seed", type=int, default=20260425)
     parser.add_argument(
@@ -67,7 +68,7 @@ def main() -> int:
     presets = [preset for preset in args.presets.split(",") if preset]
     base_config = RandomFaultConfig(
         node_count=args.nodes,
-        epochs=args.epochs,
+        rounds=args.rounds,
         trials=args.trials,
         seed=args.seed,
     )

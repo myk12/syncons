@@ -1,187 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
 
 from .cluster import ClusterRun
-from ..protocol.types import ScenarioExpectation, SimulationTiming, bitmap_text, format_duration_ns, parse_duration_ns
+from ..protocol.types import JsonDict, ScenarioExpectation, SimulationTiming, bitmap_text, format_duration_ns, parse_duration_ns
 from ..scenarios.builtin import SCENARIOS
-
-
-def _format_rows(rows: dict[int, int], node_count: int) -> str:
-    return "{%s}" % ", ".join(
-        f"{node_id}:{bitmap_text(rows.get(node_id, 0), node_count)}"
-        for node_id in range(node_count)
-    )
-
-
-def _format_stage(stage: dict[str, object], node_count: int) -> str:
-    return (
-        f"round={stage['round']} "
-        f"membership={bitmap_text(stage['installed_membership'], node_count)} "
-        f"sound_bitmap={bitmap_text(stage['sound_bitmap'], node_count)} "
-        f"sound_matrix={_format_rows(stage['sound_matrix'], node_count)}"
-    )
-
-
-def _format_stage_line(label: str, stage: dict[str, object], node_count: int) -> str:
-    return "    " + f"{label:<15}[{_stage_compact(stage, node_count)}]"
-
-
-def _format_pending_config(pending: dict[str, object] | None, node_count: int) -> str:
-    if pending is None:
-        return "none"
-    return (
-        f"status={pending['status']} "
-        f"effective_round={pending['effective_round']} "
-        f"members={bitmap_text(pending['members_bitmap'], node_count)} "
-        f"run_id={pending['run_id']}"
-    )
-
-
-def _format_committed_sequence(committed_rounds: list[dict[str, object]], node_count: int) -> str:
-    if not committed_rounds:
-        return "[]"
-    encoded_entries: list[str] = []
-    group_parts: list[str] = []
-    current_bitmap = int(committed_rounds[0]["commit_set"])
-    current_count = 0
-
-    for entry in committed_rounds:
-        round_id = int(entry["round"])
-        commit_set = int(entry["commit_set"])
-        members = tuple(sorted(int(member) for member in entry["proposals"].keys()))
-        encoded_entries.append(
-            f"{round_id}:{commit_set}:{','.join(str(member) for member in members)}"
-        )
-        if commit_set == current_bitmap:
-            current_count += 1
-            continue
-        group_parts.append(f"{bitmap_text(current_bitmap, node_count)}x{current_count}")
-        current_bitmap = commit_set
-        current_count = 1
-
-    group_parts.append(f"{bitmap_text(current_bitmap, node_count)}x{current_count}")
-
-    digest = hashlib.sha256("|".join(encoded_entries).encode("utf-8")).hexdigest()[:12]
-    first_round = int(committed_rounds[0]["round"])
-    last_round = int(committed_rounds[-1]["round"])
-    round_span = f"{first_round}" if first_round == last_round else f"{first_round}-{last_round}"
-    return (
-        f"[len={len(committed_rounds)} "
-        + f"rounds={round_span} "
-        + f"digest={digest} "
-        + f"groups={','.join(group_parts)}]"
-    )
-
-
-def _format_control_plane_event(event: dict[str, object], node_count: int) -> str:
-    kind = str(event["kind"])
-    if kind == "PrepareAck":
-        config = event["config"]
-        return (
-            f"PrepareAck node={event['node_id']} "
-            + f"effective_round={config['effective_round']} "
-            + f"members={bitmap_text(config['members_bitmap'], node_count)} "
-            + f"run_id={config['run_id']}"
-        )
-    if kind == "NodeHalted":
-        halt = event["halt_record"]
-        return (
-            f"NodeHalted node={event['node_id']} "
-            + f"failed_round={halt['failed_round']} "
-            + f"reason={halt['halt_reason']} "
-            + f"visible_at={format_duration_ns(int(event['available_at_ns']))}"
-        )
-    if kind == "NodeCrashed":
-        return (
-            f"NodeCrashed node={event['node_id']} "
-            + f"visible_at={format_duration_ns(int(event['available_at_ns']))}"
-        )
-    return json.dumps(event, sort_keys=True)
-
-
-def _color_enabled() -> bool:
-    term = os.environ.get("TERM", "")
-    return term not in ("", "dumb") and os.environ.get("NO_COLOR") is None
-
-
-def _paint(text: str, color: str | None, bold: bool = False) -> str:
-    if not _color_enabled() or color is None:
-        return text
-    colors = {
-        "blue": "34",
-        "cyan": "36",
-        "green": "32",
-        "yellow": "33",
-        "red": "31",
-        "magenta": "35",
-        "gray": "90",
-    }
-    code = colors[color]
-    prefix = "\033[" + ("1;" if bold else "") + code + "m"
-    return prefix + text + "\033[0m"
-
-
-def _status_color(status: str) -> str | None:
-    if status == "RUNNING":
-        return "green"
-    if status == "HALTED":
-        return "red"
-    if status == "CRASHED":
-        return "magenta"
-    return None
-
-
-def _decision_color(decision: str | None) -> str | None:
-    if decision == "CONTINUE":
-        return "green"
-    if decision == "HALT":
-        return "red"
-    if decision == "SKIP":
-        return "gray"
-    return None
-
-
-def _membership_state_short(value: str) -> str:
-    return {
-        "ACTIVE": "A",
-        "FAILED": "F",
-        "RECOVERING": "R",
-        "REJOIN_PENDING": "P",
-    }.get(value, value[:1])
-
-
-def _is_fault_reason(reason: str) -> bool:
-    normalized = reason.lower()
-    benign_markers = (
-        "same-epoch delivery",
-        "deliver",
-    )
-    if any(marker in normalized for marker in benign_markers):
-        return False
-    return True
-
-
-def _bitmap_membership_states(node_states: dict[int, str]) -> str:
-    return " ".join(
-        f"{node_id}:{_membership_state_short(state)}"
-        for node_id, state in sorted(node_states.items())
-    )
-
-
-def _format_bitmap_or_none(value: int | None, node_count: int) -> str:
-    if value is None:
-        return "none"
-    return bitmap_text(value, node_count)
-
-
-def _format_int_list_or_none(values: list[int] | None) -> str:
-    if not values:
-        return "none"
-    return ",".join(str(value) for value in values)
 
 
 def _compact_round_list(rounds: list[int]) -> str:
@@ -200,310 +24,7 @@ def _compact_round_list(rounds: list[int]) -> str:
     return "[" + ", ".join(ranges) + "]"
 
 
-def _boundary_summary(boundary: dict[str, object] | None, node_count: int) -> str:
-    if boundary is None:
-        return "boundary=none"
-    if not boundary.get("evaluated", False):
-        return f"boundary=SKIP reason={boundary.get('reason')} stage_round={boundary.get('stage_round')}"
-
-    decision = str(boundary.get("decision", "unknown"))
-    decision_text = _paint(decision, _decision_color(decision), bold=True)
-    parts = [
-        f"stage_round={boundary['stage_round']}",
-        f"quorum={boundary['quorum']}",
-        f"previous_sound_set={_format_bitmap_or_none(boundary.get('previous_sound_set'), node_count)}",
-        f"self_row={_format_bitmap_or_none(boundary.get('self_row'), node_count)}",
-        f"agreed_row={_format_bitmap_or_none(boundary.get('agreed_row'), node_count)}",
-        f"commit_set={_format_bitmap_or_none(boundary.get('commit_set'), node_count)}",
-        f"sound_set={_format_bitmap_or_none(boundary.get('sound_set'), node_count)}",
-        f"decision={decision_text}",
-    ]
-    if boundary.get("halt_reason") is not None:
-        parts.append(f"reason={boundary['halt_reason']}")
-    return " ".join(parts)
-
-
-def _stage_compact(stage: dict[str, object], node_count: int) -> str:
-    return (
-        f"round={stage['round']} "
-        f"membership={bitmap_text(stage['installed_membership'], node_count)} "
-        f"sound_bitmap={bitmap_text(stage['sound_bitmap'], node_count)} "
-        f"sound_matrix={_format_rows(stage['sound_matrix'], node_count)}"
-    )
-
-
-def _box_header(title: str, color: str = "blue") -> str:
-    bar = "━" * 24
-    return _paint(f"{bar} {title} {bar}", color, bold=True)
-
-
-def _section_header(title: str, color: str = "cyan") -> str:
-    return _paint(f"{title}:", color, bold=True)
-
-
-def _render_round_record(round_record: dict[str, object], node_count: int) -> list[str]:
-    lines: list[str] = []
-    control = round_record["control"]
-    lines.append(_box_header(f"Round {round_record['round']}", "blue"))
-    lines.append(
-        "  "
-        + f"time     start={format_duration_ns(round_record['start_time_ns'])} "
-        + f"end={format_duration_ns(round_record['end_time_ns'])}"
-    )
-    lines.append(
-        "  "
-        + f"control  membership_epoch={control['membership_epoch']} "
-        + f"membership={bitmap_text(control['members_bitmap'], node_count)} "
-        + f"run_id={control['run_id']} "
-        + f"node_states=[{_bitmap_membership_states(control['node_states'])}]"
-    )
-    cp_runtime = round_record.get("control_plane_runtime") or {}
-    collection_deadline_ns = cp_runtime.get("collection_deadline_ns")
-    episode_members_bitmap = cp_runtime.get("episode_members_bitmap")
-    pending_future = cp_runtime.get("pending_future")
-    lines.append(
-        "  "
-        + "cp_runtime  "
-        + f"collecting_targets={_format_int_list_or_none(cp_runtime.get('collecting_targets'))}  "
-        + f"episode_targets={_format_int_list_or_none(cp_runtime.get('episode_targets'))}  "
-        + f"episode_members={_format_bitmap_or_none(episode_members_bitmap, node_count)}  "
-        + f"collection_deadline={format_duration_ns(int(collection_deadline_ns)) if collection_deadline_ns is not None else 'none'}  "
-        + f"pending={_format_pending_config(pending_future, node_count)}"
-    )
-
-    cp_writes = round_record.get("control_plane_writes") or []
-    if cp_writes:
-        lines.append(_section_header("Control-plane writes", "magenta"))
-        for write in cp_writes:
-            lines.append(
-                "  "
-                + f"node{write['node_id']} "
-                + f"membership_state={write['membership_state']} "
-                + f"membership_epoch={write['membership_epoch']} "
-                + f"members={bitmap_text(write['members_bitmap'], node_count)} "
-                + f"run_id={write['run_id']} "
-                + f"pending={write['pending']} "
-                + f"repair_log_len={write['repair_log_len']}"
-            )
-
-    lines.append(_section_header("Advance", "cyan"))
-    for transition in round_record["transitions"]:
-        node_state = next(node for node in round_record["node_end_state"] if node["node_id"] == transition["node_id"])
-        boundary = node_state.get("last_round_boundary_evaluation")
-        status_after = _paint(
-            transition["status_after"],
-            _status_color(transition["status_after"]),
-            bold=True,
-        )
-        fault_value = transition["fault"] or "-"
-        if transition["fault"] is not None:
-            fault_value = _paint(str(transition["fault"]), "red", bold=True)
-        lines.append(
-            "  "
-            + f"node{transition['node_id']}  "
-            + f"cp={transition['control_plane']}  "
-            + f"fault={fault_value}  "
-            + f"status={transition['status_before']}->{status_after}  "
-            + f"membership={transition['membership_state_before']}->{transition['membership_state_after']}"
-        )
-        cp_details = transition.get("control_plane_details") or []
-        if cp_details:
-            lines.append("    cp_detail  " + " | ".join(cp_details))
-        outbound = transition["outbound"]
-        if outbound is None:
-            lines.append("    tx        none")
-        else:
-            lines.append(
-                "    tx        "
-                + f"dst={tuple(outbound['destinations'])}  "
-                + f"run_id={outbound['run_id']}  "
-                + f"sound={bitmap_text(outbound['sound_bitmap'], node_count)}  "
-                + f"payload={outbound['payload']}"
-            )
-        lines.append("    boundary  " + _boundary_summary(boundary, node_count))
-
-    cp_events = round_record.get("control_plane_events") or []
-    if cp_events:
-        lines.append(_section_header("Control-plane events", "magenta"))
-        for event in cp_events:
-            lines.append("  " + _format_control_plane_event(event, node_count))
-
-    lines.append(_section_header("Network", "yellow"))
-    if round_record["network"]:
-        send_count = sum(1 for entry in round_record["network"] if entry["kind"] == "send")
-        delay_count = sum(1 for entry in round_record["network"] if entry["kind"] == "delay")
-        deliver_count = sum(1 for entry in round_record["network"] if entry["kind"] == "deliver")
-        drop_count = sum(1 for entry in round_record["network"] if entry["kind"] == "drop")
-        lines.append(
-            "  "
-            + f"summary  send={send_count}  delay={delay_count}  deliver={deliver_count}  drop={drop_count}"
-        )
-        for entry in round_record["network"]:
-            if entry["kind"] == "drop":
-                reason = (
-                    _paint(entry["reason"], "red", bold=True)
-                    if _is_fault_reason(entry["reason"])
-                    else entry["reason"]
-                )
-                lines.append(
-                    _paint("  DROP  ", "red", bold=True)
-                    + f"n{entry['src']}->{entry['dst']} "
-                    + f"packet_round={entry['packet_round']} "
-                    + f"run_id={entry['run_id']} "
-                    + f"sound={bitmap_text(entry['sound_bitmap'], node_count)} "
-                    + f"reason={reason}"
-                )
-            elif entry["kind"] in {"send", "delay"}:
-                reason = (
-                    _paint(entry["reason"], "red", bold=True)
-                    if _is_fault_reason(entry["reason"])
-                    else entry["reason"]
-                )
-                lines.append(
-                    _paint("  " + ("DELAY" if entry["kind"] == "delay" else "SEND "), "yellow", bold=True)
-                    + f" n{entry['src']}->{entry['dst']} "
-                    + f"packet_round={entry['packet_round']} "
-                    + f"deliver_round={entry['deliver_round']} "
-                    + f"run_id={entry['run_id']} "
-                    + f"sound={bitmap_text(entry['sound_bitmap'], node_count)} "
-                    + f"reason={reason}"
-                )
-            else:
-                lines.append(
-                    _paint("  DELIVR", "green", bold=True)
-                    + f" n{entry['src']}->{entry['dst']} "
-                    + f"packet_round={entry['packet_round']} "
-                    + f"run_id={entry['run_id']} "
-                    + f"sound={bitmap_text(entry['sound_bitmap'], node_count)}"
-                )
-    else:
-        lines.append("  summary  send=0  delay=0  deliver=0  drop=0")
-        lines.append("  none")
-
-    lines.append(_section_header("State", "magenta"))
-    for node in round_record["node_end_state"]:
-        status_text = _paint(node["status"], _status_color(node["status"]), bold=True)
-        lines.append(
-            "  "
-            + f"node{node['node_id']} "
-            + f"status={status_text} "
-            + f"membership_state={node['membership_state']} "
-            + f"installed={bitmap_text(node['installed_membership'], node_count)} "
-            + f"current_sound_set={bitmap_text(node['current_sound_set'], node_count)} "
-            + f"run_id={node['run_id']}"
-        )
-        lines.append("    " + f"pending_config  {_format_pending_config(node.get('pending_config'), node_count)}")
-        lines.append("    " + f"committed_seq  {_format_committed_sequence(node['committed_rounds'], node_count)}")
-        lines.append(_format_stage_line("current_stage", node["current_stage"], node_count))
-        lines.append(_format_stage_line("evidence_stage", node["evidence_stage"], node_count))
-        lines.append(_format_stage_line("commit_stage", node["commit_stage"], node_count))
-
-    lines.append(_paint("━" * 58, "blue"))
-    lines.append("")
-    return lines
-
-
-def _interesting_rounds(result: dict[str, object]) -> set[int]:
-    interesting: set[int] = set()
-    previous_nodes: dict[int, dict[str, object]] | None = None
-
-    for round_record in result["round_trace"]:
-        round_id = int(round_record["round"])
-        cp_runtime = round_record.get("control_plane_runtime") or {}
-        if (
-            round_record.get("control_plane_writes")
-            or round_record.get("control_plane_events")
-            or cp_runtime.get("collecting_targets")
-            or cp_runtime.get("episode_targets")
-            or cp_runtime.get("episode_members_bitmap") is not None
-            or cp_runtime.get("collection_deadline_ns") is not None
-            or cp_runtime.get("pending_future") is not None
-        ):
-            interesting.add(round_id)
-        if any(entry["kind"] in {"drop", "delay"} for entry in round_record.get("network", [])):
-            interesting.add(round_id)
-
-        current_nodes = {
-            int(node["node_id"]): node
-            for node in round_record["node_end_state"]
-        }
-        for transition in round_record["transitions"]:
-            boundary = current_nodes[int(transition["node_id"])].get("last_round_boundary_evaluation") or {}
-            if (
-                transition.get("fault") is not None
-                or transition.get("control_plane") != "none"
-                or boundary.get("decision") == "HALT"
-            ):
-                interesting.add(round_id)
-        if previous_nodes is not None:
-            for node_id, node in current_nodes.items():
-                previous = previous_nodes[node_id]
-                if (
-                    node["status"] != previous["status"]
-                    or node["membership_state"] != previous["membership_state"]
-                    or node["installed_membership"] != previous["installed_membership"]
-                    or node["current_sound_set"] != previous["current_sound_set"]
-                    or node["run_id"] != previous["run_id"]
-                    or node.get("pending_config") != previous.get("pending_config")
-                ):
-                    interesting.add(round_id)
-                    break
-        previous_nodes = current_nodes
-
-    return interesting
-
-
-def _selected_rounds(result: dict[str, object], trace_mode: str, trace_context: int) -> list[int]:
-    all_rounds = [int(round_record["round"]) for round_record in result["round_trace"]]
-    if trace_mode == "full":
-        return all_rounds
-    interesting = _interesting_rounds(result)
-    if trace_mode == "event":
-        return sorted(interesting)
-    if trace_mode == "windowed":
-        selected: set[int] = set()
-        max_round = max(all_rounds, default=-1)
-        for round_id in interesting:
-            start = max(0, round_id - trace_context)
-            end = min(max_round, round_id + trace_context)
-            selected.update(range(start, end + 1))
-        return sorted(selected)
-    raise ValueError(f"unknown trace mode {trace_mode!r}")
-
-
-def round_trace_text(
-    result: dict[str, object],
-    *,
-    trace_mode: str = "full",
-    trace_context: int = 1,
-) -> str:
-    node_count = result["node_count"]
-    selected_rounds = set(_selected_rounds(result, trace_mode, trace_context))
-    lines: list[str] = []
-    last_emitted_round: int | None = None
-
-    for round_record in result["round_trace"]:
-        round_id = int(round_record["round"])
-        if round_id not in selected_rounds:
-            continue
-        if last_emitted_round is not None and round_id > last_emitted_round + 1:
-            skipped = round_id - last_emitted_round - 1
-            lines.append(
-                _paint(
-                    f"... skipped {skipped} round(s) with no selected trace events ...",
-                    "gray",
-                )
-            )
-            lines.append("")
-        lines.extend(_render_round_record(round_record, node_count))
-        last_emitted_round = round_id
-
-    if not lines:
-        return "(no rounds selected for trace output)"
-    return "\n".join(lines).rstrip()
-
-
-def text_summary(result: dict[str, object]) -> str:
+def text_summary(result: JsonDict) -> str:
     lines = [
         f"Cluster run: {result['node_count']} nodes for {result['rounds']} rounds",
         "Timing: "
@@ -539,12 +60,10 @@ def text_summary(result: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def performance_summary_text(result: dict[str, object]) -> str:
+def performance_summary_text(result: JsonDict) -> str:
     node_count = int(result["node_count"])
-    rounds = int(result["rounds"])
-    timing = result["timing"]
     simulated_time_ns = int(result["simulated_time_ns"])
-    round_length_ns = int(timing["round_length_ns"])
+    round_length_ns = int(result["timing"]["round_length_ns"])
     total_commits = sum(len(node["committed_rounds"]) for node in result["nodes"])
     max_frontier = max(
         (-1 if not node["committed_rounds"] else int(node["committed_rounds"][-1]["round"]))
@@ -650,12 +169,12 @@ def performance_summary_text(result: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def evaluate_expectation(result: dict[str, object], expectation: ScenarioExpectation) -> list[str]:
+def evaluate_expectation(result: JsonDict, expectation: ScenarioExpectation) -> list[str]:
     return expectation.check(result)
 
 
 def evaluate_expectation_for_round_budget(
-    result: dict[str, object],
+    result: JsonDict,
     expectation: ScenarioExpectation,
     *,
     run_rounds: int,
@@ -702,8 +221,6 @@ def evaluate_expectation_for_round_budget(
             )
             continue
 
-        # Nodes that are no longer running should not accumulate additional
-        # committed rounds once the built-in expectation has been reached.
         if status != "RUNNING" or halted_round is not None:
             if actual != expected:
                 failures.append(
@@ -720,7 +237,7 @@ def parse_args() -> argparse.Namespace:
         except ValueError as exc:
             raise argparse.ArgumentTypeError(str(exc)) from exc
 
-    parser = argparse.ArgumentParser(description="Reference simulator for Safe-ABSC.")
+    parser = argparse.ArgumentParser(description="Reference simulator for SynCons.")
     parser.add_argument(
         "scenario",
         choices=sorted(SCENARIOS),
@@ -743,42 +260,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Emit the full trace as JSON.",
-    )
-    parser.add_argument(
-        "--show-events",
-        action="store_true",
-        help="Print round/event trace after the summary.",
-    )
-    parser.add_argument(
-        "--trace-mode",
-        choices=("full", "event", "windowed"),
-        default="full",
-        help=(
-            "Trace rendering mode for --show-events: "
-            "`full` prints every round, `event` prints only interesting rounds, "
-            "and `windowed` prints interesting rounds plus nearby context."
-        ),
-    )
-    parser.add_argument(
-        "--trace-context",
-        type=int,
-        default=1,
-        help="Context rounds to include on each side when --trace-mode=windowed.",
-    )
-    parser.add_argument(
-        "--show-trace",
-        action="store_true",
-        help="Print per-node traces after the summary.",
-    )
-    parser.add_argument(
-        "--recording-mode",
-        choices=("debug", "eval"),
-        default="debug",
-        help=(
-            "Artifact recording profile. `debug` preserves full round/event traces, "
-            "while `eval` keeps only lightweight result state for long-running simulations."
-        ),
+        help="Emit the simulation result as JSON.",
     )
     parser.add_argument(
         "--check",
@@ -851,7 +333,6 @@ def main() -> int:
         rounds=spec.rounds if args.rounds is None else args.rounds,
         network_fault_model=spec.network_fault_model,
         node_fault_model=spec.node_fault_model,
-        recording_mode=args.recording_mode,
         timing=SimulationTiming(
             round_length_ns=args.round_length,
             halt_report_delay_ns=args.halt_report_delay,
@@ -866,12 +347,6 @@ def main() -> int:
     result = run.run()
     result["scenario"] = args.scenario
     result["description"] = spec.description
-
-    if not args.json and args.recording_mode == "eval" and (args.show_events or args.show_trace):
-        print(
-            "Note: recording_mode=eval suppresses detailed round and node trace artifacts.",
-            flush=True,
-        )
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -900,24 +375,8 @@ def main() -> int:
             if expectation_mode_note is not None:
                 print(f"  {expectation_mode_note}")
 
-    if args.show_events:
-        print("\nRound trace:")
-        print(
-            round_trace_text(
-                result,
-                trace_mode=args.trace_mode,
-                trace_context=args.trace_context,
-            )
-        )
-
     if args.perf_summary:
         print()
         print(performance_summary_text(result))
-
-    if args.show_trace:
-        for node in result["nodes"]:
-            print(f"\nTrace for node {node['node_id']}:")
-            for entry in node["trace"]:
-                print(entry)
 
     return 1 if failures else 0

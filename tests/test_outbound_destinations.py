@@ -12,12 +12,12 @@ def test_advance_round_returns_explicit_outbound_destinations() -> None:
     node.installed_membership_epoch = 0
     node.run_id = 7
 
-    outbound0 = node.advance_round(0)
-    assert outbound0 is not None
-    assert outbound0.destinations == (0, 2)
-    assert outbound0.packet.run_id == 7
-    assert not hasattr(outbound0.packet, "membership_epoch")
+    result0 = node.advance_round(0)
+    assert result0.outbound is not None
+    assert result0.outbound.destinations == (0, 2)
+    assert result0.outbound.packet.run_id == 7
+    assert not hasattr(result0.outbound.packet, "membership_epoch")
 
-    outbound1 = node.advance_round(1)
-    assert outbound1 is not None
-    assert outbound1.destinations == (0, 2)
+    result1 = node.advance_round(1)
+    assert result1.outbound is not None
+    assert result1.outbound.destinations == (0, 2)

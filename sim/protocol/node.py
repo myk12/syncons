@@ -3,11 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from .types import CommittedRoundEntry, ControlPlaneTransaction, HaltRecord, MembershipState, NodeStatus, OutboundPacket, PayloadFactory, Packet, PendingConfigStatus, RepairLog, RoundStage, bitmap_members, bitmap_text
+from .types import (CommittedRound,
+                    CommittedRoundRecord,
+                    ControlPlaneUpdate,
+                    HaltRecord, JsonDict, 
+                    MembershipState, NodeStatus, 
+                    OutboundPacket, PayloadFactory, 
+                    Packet, PendingConfigStatus, 
+                    RepairLog, RoundStage, bitmap_members, 
+                    NodeRoundResult)
 
 
 def default_payload(node_id: int, round_id: int) -> str:
-    return f"node{node_id}:round{round_id}"
+    return f"{node_id}_{round_id}"
 
 
 @dataclass
@@ -18,7 +26,9 @@ class Node:
     status: NodeStatus = NodeStatus.RUNNING
     current_round: int = 0
     status_reason: str | None = None
-    committed_rounds: list[CommittedRoundEntry] = field(default_factory=list)
+    committed_frontier: int = -1
+    last_committed_sound_set: int | None = None
+    commit_digest: str = field(default_factory=lambda: hashlib.sha256(b"syncons-log-empty").hexdigest())
     halted_round: int | None = None
     halt_details: HaltRecord | None = None
 
@@ -32,12 +42,8 @@ class Node:
         self.current_stage = RoundStage(round_id=-1, membership_epoch=0, installed_membership=0)
         self.evidence_stage = RoundStage(round_id=-1, membership_epoch=0, installed_membership=0)
         self.commit_stage = RoundStage(round_id=-2, membership_epoch=0, installed_membership=0)
-        self.trace: list[str] = []
-        self.last_round_boundary_evaluation: dict[str, object] | None = None
-        self.last_control_plane_action = "none"
-        self.last_control_plane_details: list[str] = []
-        self._control_plane_event_outbox: list[dict[str, object]] = []
-        self._pending_control_plane_transaction: ControlPlaneTransaction | None = None
+        self._control_plane_event_outbox: list[JsonDict] = []
+        self._pending_control_plane_update: ControlPlaneUpdate | None = None
         self._control_plane_irq_pending = False
 
     def _quorum_for_membership(self, installed_membership: int) -> int:
@@ -122,7 +128,6 @@ class Node:
             membership_epoch=self.installed_membership_epoch,
             installed_membership=self.current_sound_set,
         )
-        self.trace.append(f"round {round_id}: reset fast-path pipeline")
 
     def _activate_pending_config_if_due(self, round_id: int) -> bool:
         if self.pending_config is None:
@@ -142,67 +147,47 @@ class Node:
         self.pending_config = None
         self.membership_state = MembershipState.ACTIVE
         self._reset_pipeline(round_id)
-        self.last_control_plane_details.append(
-            "activate_pending "
-            + f"membership_epoch={pending.membership_epoch} "
-            + f"members={bitmap_text(pending.members_bitmap, self.node_count)} "
-            + f"run_id={pending.run_id}"
-        )
-        self.trace.append(
-            "round "
-            + str(round_id)
-            + ": locally activates committed pending config "
-            + f"membership_epoch={pending.membership_epoch} "
-            + f"members={bitmap_text(pending.members_bitmap, self.node_count)} "
-            + f"run_id={pending.run_id}"
-        )
         return True
 
-    def _emit_control_plane_event(self, event: dict[str, object]) -> None:
+    def _emit_control_plane_event(self, event: JsonDict) -> None:
         self._control_plane_event_outbox.append(event)
 
-    def drain_control_plane_events(self) -> list[dict[str, object]]:
+    def pull_control_plane_events(self) -> list[JsonDict]:
         events = list(self._control_plane_event_outbox)
         self._control_plane_event_outbox.clear()
         return events
 
-    def write_control_plane_transaction(self, transaction: ControlPlaneTransaction) -> None:
-        # ClusterRun writes one aggregated control-plane mailbox transaction and
+    def push_control_plane_update(self, update: ControlPlaneUpdate) -> None:
+        # ClusterRun pushes one aggregated control-plane update and
         # raises a logical IRQ. The node does not pull global CP state itself.
-        self._pending_control_plane_transaction = transaction
+        self._pending_control_plane_update = update
         self._control_plane_irq_pending = True
 
-    def _apply_control_plane_transaction(self, round_id: int, transaction: ControlPlaneTransaction) -> None:
-        # Apply the contents of a cluster-delivered control-plane mailbox
-        # transaction. This may reboot a halted/crashed node, install repair
+    def _apply_control_plane_update(self, round_id: int, update: ControlPlaneUpdate) -> None:
+        # Apply the contents of a cluster-delivered control-plane update.
+        # This may reboot a halted/crashed node, install repair
         # state, stage a pending config, or update the installed config.
         previous_state = self.membership_state
         previous_epoch = self.installed_membership_epoch
         previous_bitmap = self.installed_membership
         previous_run_id = self.run_id
 
-        membership_state = transaction.membership_state
-        self.installed_membership_epoch = transaction.installed_config.membership_epoch
-        self.installed_membership = transaction.installed_config.members_bitmap
+        membership_state = update.membership_state
+        self.installed_membership_epoch = update.installed_config.membership_epoch
+        self.installed_membership = update.installed_config.members_bitmap
         self.current_sound_set = self.installed_membership
-        self.run_id = transaction.installed_config.run_id
-        self.pending_config = transaction.pending_config
+        self.run_id = update.installed_config.run_id
+        self.pending_config = update.pending_config
         self.membership_state = membership_state
-        repair_log = transaction.repair_log
+        repair_log = update.repair_log
 
         if self.status in (NodeStatus.CRASHED, NodeStatus.HALTED) and membership_state in (MembershipState.RECOVERING, MembershipState.REJOIN_PENDING, MembershipState.ACTIVE):
             self.status = NodeStatus.RUNNING
             self.status_reason = "rebooted_under_control_plane"
             self.halted_round = None
             self.halt_details = None
-            self.last_control_plane_details.append(
-                f"reboot membership_state={membership_state.value} run_id={self.run_id}"
-            )
-            self.trace.append(
-                f"round {round_id}: rebooted into membership state {membership_state.value} with run_id {self.run_id}"
-            )
 
-        if repair_log is not None and self._needs_repair_log(repair_log):
+        if repair_log is not None and self._should_install_repair_log(repair_log):
             self._install_repair_log(round_id, repair_log)
 
         config_changed = any(
@@ -215,64 +200,29 @@ class Node:
 
         if previous_state != MembershipState.ACTIVE and membership_state == MembershipState.ACTIVE:
             self._reset_pipeline(round_id)
-            self.last_control_plane_details.append(
-                "activate_installed "
-                + f"membership_epoch={self.installed_membership_epoch} "
-                + f"members={bitmap_text(self.installed_membership, self.node_count)}"
-            )
-            self.trace.append(
-                "round "
-                + str(round_id)
-                + f": control plane activated installed_membership_epoch={self.installed_membership_epoch} "
-                + f"installed={bitmap_text(self.installed_membership, self.node_count)}"
-            )
         elif config_changed:
             self._reset_pipeline(round_id)
-            self.last_control_plane_details.append(
-                "install_config "
-                + f"membership_epoch={self.installed_membership_epoch} "
-                + f"members={bitmap_text(self.installed_membership, self.node_count)}"
-            )
-            self.trace.append(
-                "round "
-                + str(round_id)
-                + f": installed config updated to membership_epoch={self.installed_membership_epoch} "
-                + f"members={bitmap_text(self.installed_membership, self.node_count)}"
-            )
 
         if self.run_id != previous_run_id:
-            self.last_control_plane_details.append(f"install_run_id={self.run_id}")
-            self.trace.append(
-                f"round {round_id}: control plane installs run_id {self.run_id}"
-            )
+            pass
 
-        if self.pending_config is not None:
-            self.last_control_plane_details.append(
-                "pending_config "
-                + f"status={self.pending_config.status.value} "
-                + f"effective_round={self.pending_config.effective_round} "
-                + f"members={bitmap_text(self.pending_config.members_bitmap, self.node_count)} "
-                + f"run_id={self.pending_config.run_id}"
-            )
 
-    def _consume_control_plane_transaction(self, round_id: int) -> bool:
-        # Consume one pending mailbox transaction at the start of the round.
+    def _pull_control_plane_update(self, round_id: int) -> bool:
+        # Pull one pending control-plane update at the start of the round.
         # This models the node-side handling path of a driver/firmware control
         # interrupt without letting the node talk to the control plane directly.
-        if not self._control_plane_irq_pending or self._pending_control_plane_transaction is None:
+        if not self._control_plane_irq_pending or self._pending_control_plane_update is None:
             return False
         previous_pending = self.pending_config
-        transaction = self._pending_control_plane_transaction
-        self._pending_control_plane_transaction = None
+        update = self._pending_control_plane_update
+        self._pending_control_plane_update = None
         self._control_plane_irq_pending = False
-        self.last_control_plane_details.append("consume_cp_irq")
-        self._apply_control_plane_transaction(round_id, transaction)
+        self._apply_control_plane_update(round_id, update)
         if (
             self.pending_config is not None
             and self.pending_config.status == PendingConfigStatus.PREPARED
             and self.pending_config != previous_pending
         ):
-            self.last_control_plane_details.append("emit_PrepareAck")
             self._emit_control_plane_event(
                 {
                     "kind": "PrepareAck",
@@ -307,25 +257,38 @@ class Node:
         )
 
     def _committed_frontier(self) -> int | None:
-        if not self.committed_rounds:
+        if self.committed_frontier < 0:
             return None
-        return int(self.committed_rounds[-1].round)
+        return self.committed_frontier
 
     def _log_digest(self) -> str:
-        return self._digest_for_committed_rounds(self.committed_rounds)
+        return self.commit_digest
 
     def _digest_for_committed_rounds(
         self,
-        committed_rounds: list[CommittedRoundEntry] | tuple[CommittedRoundEntry, ...],
+        committed_rounds: list[CommittedRoundRecord] | tuple[CommittedRoundRecord, ...],
     ) -> str:
-        committed_prefix = [entry.digest_projection() for entry in committed_rounds]
-        encoded = json.dumps(committed_prefix, sort_keys=True, separators=(",", ":")).encode()
+        digest = hashlib.sha256(b"syncons-log-empty").hexdigest()
+        for entry in committed_rounds:
+            digest = self._extend_log_digest(digest, entry)
+        return digest
+
+    def _extend_log_digest(self, previous_digest: str, entry: CommittedRound | CommittedRoundRecord) -> str:
+        encoded = json.dumps(
+            {
+                "previous_digest": previous_digest,
+                "entry": entry.digest_projection(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
         return hashlib.sha256(encoded).hexdigest()
 
-    def _needs_repair_log(self, repair_log: RepairLog | None) -> bool:
+    def _should_install_repair_log(self, repair_log: RepairLog | None) -> bool:
         if repair_log is None:
             return False
-        if len(repair_log) != len(self.committed_rounds):
+        repair_frontier = -1 if not repair_log.entries else int(repair_log.entries[-1].round)
+        if repair_frontier != self.committed_frontier:
             return True
         return self._digest_for_committed_rounds(repair_log.entries) != self._log_digest()
 
@@ -342,14 +305,14 @@ class Node:
     ) -> None:
         if not repair_log:
             return
-        self.committed_rounds = list(repair_log.entries)
-        digest = self._log_digest()[:12]
-        self.last_control_plane_details.append(
-            f"repair_log len={len(self.committed_rounds)} digest={digest}"
-        )
-        self.trace.append(
-            f"round {round_id}: repaired committed log len={len(self.committed_rounds)} digest={digest}"
-        )
+        if repair_log.entries:
+            self.committed_frontier = int(repair_log.entries[-1].round)
+            self.last_committed_sound_set = None
+        else:
+            self.committed_frontier = -1
+            self.last_committed_sound_set = None
+        self.commit_digest = self._digest_for_committed_rounds(repair_log.entries)
+        _ = round_id
 
     def _build_halt_record(
         self,
@@ -369,7 +332,7 @@ class Node:
             observation_rows=dict(sorted(rows.items())),
             self_row=local_row,
             committed_frontier=self._committed_frontier(),
-            sound_set_lineage=None if not self.committed_rounds else self.committed_rounds[-1].sound_set,
+            sound_set_lineage=self.last_committed_sound_set,
             log_digest=self._log_digest(),
             halt_reason=halt_reason,
         )
@@ -381,15 +344,10 @@ class Node:
         rows: dict[int, int],
         local_row: int,
         halt_reason: str,
-        trace_message: str,
-        evaluation: dict[str, object],
-    ) -> tuple[str, None]:
+    ) -> tuple[str, None, tuple[CommittedRound, ...]]:
         self.status = NodeStatus.HALTED
         self.halted_round = self.current_round
         self.status_reason = halt_reason
-        evaluation["decision"] = "HALT"
-        evaluation["halt_reason"] = halt_reason
-        self.last_round_boundary_evaluation = evaluation
         self.halt_details = self._build_halt_record(
             stage=stage,
             rows=rows,
@@ -403,15 +361,7 @@ class Node:
                 "halt_record": self.halt_details.to_snapshot(),
             }
         )
-        self.trace.append(f"round {self.current_round}: halt on round {stage.round_id}, {trace_message}")
-        return "HALT", None
-
-    def _set_boundary_skip(self, *, reason: str, stage_round: int | None = None) -> None:
-        self.last_round_boundary_evaluation = {
-            "evaluated": False,
-            "reason": reason,
-            "stage_round": stage_round,
-        }
+        return "HALT", None, ()
 
     #
     # Main entry point for advancing the protocol by one round.
@@ -420,52 +370,40 @@ class Node:
         # - this round's boundary derives the agreed row, commit set, and sound set;
         # - the resulting sound set is then emitted as this round's sound bitmap.
     #
-    def advance_round(self, new_round: int) -> OutboundPacket | None:
+    def advance_round(self, new_round: int) -> NodeRoundResult:
         self.current_round = new_round
 
         # 1. Activate any pending config if it is due, before doing anything else. 
         # This ensures that we are always operating with the most up-to-date configuration, 
         # and that any control-plane-delivered config changes take effect at the intended round boundary.
-        self.last_control_plane_action = "none"
-        self.last_control_plane_details = []
         if self.status == NodeStatus.CRASHED and self.halted_round == new_round:
-            self._set_boundary_skip(reason="crash_injected_at_round_start")
-            self.trace.append(f"round {new_round}: crash injected at round start, no control-plane work or shift")
-            return None
+            return NodeRoundResult(outbound=None, new_commits=())
         self._activate_pending_config_if_due(new_round)
-        self.last_control_plane_action = "applied" if self._consume_control_plane_transaction(new_round) else "none"
+        self._pull_control_plane_update(new_round)
 
         # 2. Check if we are in a state that allows us to participate in the protocol. 
         # If not, we skip the round without mutating any state.
         if self.status != NodeStatus.RUNNING:
-            self._set_boundary_skip(reason=f"status_{self.status.value.lower()}")
-            self.trace.append(f"round {new_round}: {self.status.value.lower()}, no shift")
-            return None
+            return NodeRoundResult(outbound=None, new_commits=())
 
         if self.membership_state != MembershipState.ACTIVE or not (self.current_sound_set & (1 << self.node_id)):
             if self.membership_state != MembershipState.ACTIVE:
                 skip_reason = f"membership_state_{self.membership_state.value.lower()}"
             else:
                 skip_reason = "local_node_excluded_from_current_sound_set"
-            self._set_boundary_skip(reason=skip_reason)
-            self.trace.append(
-                f"round {new_round}: membership_state={self.membership_state.value}, no fast-path participation"
-            )
-            return None
+            _ = skip_reason
+            return NodeRoundResult(outbound=None, new_commits=())
 
         # 3. !!! Critical Section !!!: Evaluate the round boundary using the
         # previous round's frozen sound-matrix evidence.
         self.commit_stage = self.evidence_stage
         self.evidence_stage = self.current_stage
-        decision, sound_set = self._evaluate_round_boundary()
+        decision, sound_set, new_commits = self._evaluate_round_boundary()
 
         emitted_sound_set = self.current_sound_set
         if sound_set is not None:
             self.current_sound_set = sound_set
             emitted_sound_set = sound_set
-            self.trace.append(
-                f"round {new_round}: continue on sound set {bitmap_text(sound_set, self.node_count)}"
-            )
 
         # The sound set derived at this boundary is the row we advertise for
         # the currently pending stage and exchange for the next round's
@@ -478,8 +416,7 @@ class Node:
         # but do not prepare a packet for the new round since we are halting and will 
         # not be participating in the next round.
         if decision == "HALT":
-            self.trace.append(f"round {new_round}: fail-stop triggered")
-            return None
+            return NodeRoundResult(outbound=None, new_commits=new_commits)
 
         # 5. If we are continuing, prepare a packet for the new round and return it for sending.
         packet = Packet(
@@ -493,26 +430,14 @@ class Node:
             packet=packet,
             destinations=self._default_destinations(),
         )
-        self.trace.append(
-            "round "
-            + str(new_round)
-            + f": tx run_id={packet.run_id} "
-            + f"sound={bitmap_text(packet.sound_bitmap, self.node_count)} payload={packet.payload} "
-            + f"dst={outbound.destinations}"
-        )
-        return outbound
+        return NodeRoundResult(outbound=outbound, new_commits=new_commits)
 
     # !!!!!!! IMPORTANT !!!!!!! 
     # The logic in this method encodes the core safety rules of the protocol.
-    def _evaluate_round_boundary(self) -> tuple[str, int | None]:
+    def _evaluate_round_boundary(self) -> tuple[str, int | None, tuple[CommittedRound, ...]]:
         stage = self.commit_stage
         if stage.round_id < 0:
-            self.last_round_boundary_evaluation = {
-                "evaluated": False,
-                "reason": "pipeline_not_warm",
-                "stage_round": stage.round_id,
-            }
-            return "SKIP", None
+            return "SKIP", None, ()
 
         rows = self._observation_rows(stage)
         commit_set = self._commit_set(stage)
@@ -521,39 +446,20 @@ class Node:
         local_row = stage.sound_matrix.get(self.node_id, 0)
         previous_sound_set = self.current_sound_set
 
-        evaluation = {
-            "evaluated": True,
-            "stage_round": stage.round_id,
-            "membership_epoch": stage.membership_epoch,
-            "installed_membership": stage.installed_membership,
-            "quorum": self._quorum_for_membership(stage.installed_membership),
-            "observation_rows": dict(sorted(rows.items())),
-            "self_row": local_row,
-            "agreed_row": agreed_row,
-            "commit_set": commit_set,
-            "sound_set": sound_set,
-            "previous_sound_set": previous_sound_set,
-        }
-
         # 1. If there is no agreed row, or if the commit set or sound set cannot be formed,
         # then we cannot safely continue and must halt.
         if agreed_row is None or commit_set is None or sound_set is None:
             if agreed_row is None:
                 halt_reason = "no_agreed_row"
-                trace_message = "no agreed row"
             elif commit_set is None:
                 halt_reason = "commit_set_not_valid"
-                trace_message = "commit set not locally valid"
             else:
                 halt_reason = "no_sound_set"
-                trace_message = "no sound set"
             return self._enter_halt_state(
                 stage=stage,
                 rows=rows,
                 local_row=local_row,
                 halt_reason=halt_reason,
-                trace_message=trace_message,
-                evaluation=evaluation,
             )
 
         # 2. If the sound set does not include the local node, then we are not part of the agreement and must halt.
@@ -564,8 +470,6 @@ class Node:
                 rows=rows,
                 local_row=local_row,
                 halt_reason=halt_reason,
-                trace_message="local node excluded from sound set",
-                evaluation=evaluation,
             )
 
         # 3. If the sound set expands outside the previous sound set,
@@ -577,58 +481,33 @@ class Node:
                 rows=rows,
                 local_row=local_row,
                 halt_reason=halt_reason,
-                trace_message=(
-                    f"sound set {bitmap_text(sound_set, self.node_count)} expands outside previous set "
-                    f"{bitmap_text(self.current_sound_set, self.node_count)}"
-                ),
-                evaluation=evaluation,
             )
 
-        committed = CommittedRoundEntry(
+        committed = CommittedRound(
             round=stage.round_id,
             membership_epoch=stage.membership_epoch,
-            installed_membership=stage.installed_membership,
             commit_set=commit_set,
-            members=tuple(bitmap_members(commit_set, self.node_count)),
-            agreed_row=agreed_row,
-            sound_set=sound_set,
-            observation_rows=dict(sorted(rows.items())),
             proposals={
                 member: stage.proposals[member]
                 for member in bitmap_members(commit_set, self.node_count)
             },
         )
-        self.committed_rounds.append(committed)
-        evaluation["decision"] = "CONTINUE"
-        self.last_round_boundary_evaluation = evaluation
-        self.trace.append(
-            f"round {self.current_round}: commit round {stage.round_id} on row {bitmap_text(agreed_row, self.node_count)} with sound set {bitmap_text(sound_set, self.node_count)}"
-        )
-        return "CONTINUE", sound_set
+        self.committed_frontier = committed.round
+        self.last_committed_sound_set = sound_set
+        self.commit_digest = self._extend_log_digest(self.commit_digest, committed)
+        return "CONTINUE", sound_set, (committed,)
 
     def receive(self, packet: Packet) -> None:
         if self.status != NodeStatus.RUNNING:
-            self.trace.append(
-                f"round {self.current_round}: ignored packet from node {packet.src_id}, local node {self.status.value.lower()}"
-            )
             return
 
         if self.membership_state != MembershipState.ACTIVE:
-            self.trace.append(
-                f"round {self.current_round}: ignored packet from node {packet.src_id}, membership_state={self.membership_state.value}"
-            )
             return
 
         if not (self.current_sound_set & (1 << packet.src_id)):
-            self.trace.append(
-                f"round {self.current_round}: drop packet from node {packet.src_id}, sender outside local fast-path universe"
-            )
             return
 
         if packet.run_id != self.run_id:
-            self.trace.append(
-                f"round {self.current_round}: drop packet from node {packet.src_id}, run_id {packet.run_id} != local {self.run_id}"
-            )
             return
 
         if packet.round_id == self.current_round:
@@ -637,21 +516,10 @@ class Node:
             # The sender's current-round sound bitmap becomes row evidence for
             # the next boundary evaluation of the currently pending stage.
             self.evidence_stage.sound_matrix[packet.src_id] = packet.sound_bitmap
-            self.trace.append(
-                f"round {self.current_round}: rx current packet from node {packet.src_id}, "
-                f"run_id={packet.run_id} sound={bitmap_text(packet.sound_bitmap, self.node_count)}"
-            )
             return
 
         if packet.round_id < self.current_round - 1:
-            self.trace.append(
-                f"round {self.current_round}: drop stale packet from node {packet.src_id} for round {packet.round_id}"
-            )
             return
-
-        self.trace.append(
-            f"round {self.current_round}: ignore late packet from node {packet.src_id} for round {packet.round_id}"
-        )
 
     def crash(self, round_id: int) -> None:
         if self.status == NodeStatus.RUNNING:
@@ -664,51 +532,9 @@ class Node:
                     "node_id": self.node_id,
                 }
             )
-            self.trace.append(f"round {round_id}: crash fault injected")
 
-    def _stage_debug_snapshot(self, stage: RoundStage) -> dict[str, object]:
-        return {
-            "round": stage.round_id,
-            "membership_epoch": stage.membership_epoch,
-            "installed_membership": stage.installed_membership,
-            "sound_bitmap": stage.sound_bitmap,
-            "proposals": dict(sorted(stage.proposals.items())),
-            "sound_matrix": {
-                member: stage.sound_matrix.get(member, 0)
-                for member in range(self.node_count)
-            },
-        }
 
-    def round_debug_snapshot(self) -> dict[str, object]:
-        return {
-            "node_id": self.node_id,
-            "status": self.status.value,
-            "status_reason": self.status_reason,
-            "membership_state": self.membership_state.value,
-            "membership_epoch": self.installed_membership_epoch,
-            "installed_membership": self.installed_membership,
-            "current_sound_set": self.current_sound_set,
-            "run_id": self.run_id,
-            "pending_config": None
-            if self.pending_config is None
-            else {
-                "membership_epoch": self.pending_config.membership_epoch,
-                "members_bitmap": self.pending_config.members_bitmap,
-                "effective_round": self.pending_config.effective_round,
-                "run_id": self.pending_config.run_id,
-                "status": self.pending_config.status.value,
-            },
-            "committed_rounds": [
-                entry.to_snapshot()
-                for entry in self.committed_rounds
-            ],
-            "last_round_boundary_evaluation": self.last_round_boundary_evaluation,
-            "current_stage": self._stage_debug_snapshot(self.current_stage),
-            "evidence_stage": self._stage_debug_snapshot(self.evidence_stage),
-            "commit_stage": self._stage_debug_snapshot(self.commit_stage),
-        }
-
-    def snapshot(self, *, include_trace: bool = True) -> dict[str, object]:
+    def snapshot(self) -> JsonDict:
         snapshot = {
             "node_id": self.node_id,
             "status": self.status.value,
@@ -728,10 +554,10 @@ class Node:
                 "status": self.pending_config.status.value,
             },
             "current_round": self.current_round,
-            "committed_rounds": [entry.to_snapshot() for entry in self.committed_rounds],
+            "committed_frontier": self._committed_frontier(),
+            "last_committed_sound_set": self.last_committed_sound_set,
+            "commit_digest": self.commit_digest,
             "halted_round": self.halted_round,
             "halt_details": None if self.halt_details is None else self.halt_details.to_snapshot(),
         }
-        if include_trace:
-            snapshot["trace"] = self.trace
         return snapshot

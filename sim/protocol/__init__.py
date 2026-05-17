@@ -1,6 +1,7 @@
 from .node import Node, default_payload
 from .types import (
-    CommittedRoundEntry,
+    CommittedRound,
+    CommittedRoundRecord,
     ControlPlaneState,
     Delivery,
     DeliveryCopy,
@@ -28,7 +29,8 @@ from .types import (
 )
 
 __all__ = [
-    "CommittedRoundEntry",
+    "CommittedRound",
+    "CommittedRoundRecord",
     "ControlPlaneState",
     "Delivery",
     "DeliveryCopy",

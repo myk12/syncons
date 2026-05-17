@@ -74,16 +74,17 @@ def test_round_boundary_commits_old_row_and_shrinks_to_sound_set() -> None:
         proposals=proposals_for(0, 1, 2),
     )
 
-    decision, continuation_group = node._evaluate_round_boundary()
+    decision, continuation_group, new_commits = node._evaluate_round_boundary()
 
     assert decision == "CONTINUE"
     assert continuation_group == 0b101
+    assert len(new_commits) == 1
     assert node.status == NodeStatus.RUNNING
-    assert len(node.committed_rounds) == 1
-    committed = node.committed_rounds[0]
+    committed = new_commits[0]
     assert committed.commit_set == 0b111
-    assert committed.agreed_row == 0b111
-    assert committed.sound_set == 0b101
+    assert committed.proposals == proposals_for(0, 1, 2)
+    assert node.committed_frontier == 0
+    assert node.last_committed_sound_set == 0b101
 
 
 def test_round_boundary_halts_when_local_node_is_excluded_from_sound_set() -> None:
@@ -96,10 +97,11 @@ def test_round_boundary_halts_when_local_node_is_excluded_from_sound_set() -> No
         proposals=proposals_for(0, 1, 2),
     )
 
-    decision, continuation_group = node._evaluate_round_boundary()
+    decision, continuation_group, new_commits = node._evaluate_round_boundary()
 
     assert decision == "HALT"
     assert continuation_group is None
+    assert new_commits == ()
     assert node.status == NodeStatus.HALTED
     assert node.status_reason == "no_agreed_row"
 
@@ -114,10 +116,11 @@ def test_round_boundary_halts_on_sound_set_regrowth() -> None:
         proposals=proposals_for(0, 1, 2),
     )
 
-    decision, continuation_group = node._evaluate_round_boundary()
+    decision, continuation_group, new_commits = node._evaluate_round_boundary()
 
     assert decision == "HALT"
     assert continuation_group is None
+    assert new_commits == ()
     assert node.status == NodeStatus.HALTED
     assert node.status_reason == "sound_set_not_subset_of_previous_set"
 
@@ -138,10 +141,11 @@ def test_advance_round_uses_new_sound_set_for_outbound_destinations() -> None:
     )
     node.current_stage = stage({}, proposals=proposals_for(0), round_id=2)
 
-    outbound = node.advance_round(3)
+    round_result = node.advance_round(3)
 
-    assert outbound is not None
-    assert outbound.destinations == (2,)
+    assert round_result.outbound is not None
+    assert round_result.outbound.destinations == (2,)
+    assert len(round_result.new_commits) == 1
     assert node.current_sound_set == 0b101
 
 
@@ -167,7 +171,8 @@ def test_receive_drops_stale_packet_without_mutating_local_state() -> None:
 
     assert node.current_stage.sound_bitmap == before_current_bitmap
     assert node.evidence_stage.sound_matrix == before_sound_matrix
-    assert node.trace[-1] == "round 2: drop stale packet from node 1 for round 0"
+    assert node.current_round == 2
+    assert node.run_id == 0
 
 
 def test_receive_drops_old_run_packet_without_mutating_local_state() -> None:
@@ -192,7 +197,8 @@ def test_receive_drops_old_run_packet_without_mutating_local_state() -> None:
 
     assert node.current_stage.sound_bitmap == before_current_bitmap
     assert node.evidence_stage.sound_matrix == before_sound_matrix
-    assert node.trace[-1] == "round 5: drop packet from node 2, run_id 1 != local 2"
+    assert node.current_round == 5
+    assert node.run_id == 2
 
 
 def test_committed_pending_config_activates_locally_at_effective_round() -> None:
@@ -220,23 +226,16 @@ def test_committed_pending_config_activates_locally_at_effective_round() -> None
     assert node.run_id == 1
 
 
-def test_rejoin_pending_node_skips_fast_path_and_clears_stale_boundary_result() -> None:
+def test_rejoin_pending_node_skips_fast_path() -> None:
     node = Node(node_id=2, node_count=3)
     node.status = NodeStatus.RUNNING
     node.membership_state = MembershipState.REJOIN_PENDING
     node.current_sound_set = 0b111
-    node.last_round_boundary_evaluation = {
-        "evaluated": True,
-        "stage_round": 0,
-        "decision": "HALT",
-        "halt_reason": "commit_set_not_valid",
-    }
 
-    outbound = node.advance_round(10)
+    round_result = node.advance_round(10)
 
-    assert outbound is None
-    assert node.last_round_boundary_evaluation == {
-        "evaluated": False,
-        "reason": "membership_state_rejoin_pending",
-        "stage_round": None,
-    }
+    assert round_result.outbound is None
+    assert round_result.new_commits == ()
+    assert node.membership_state == MembershipState.REJOIN_PENDING
+    assert node.current_round == 10
+    assert node.committed_frontier == -1

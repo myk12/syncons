@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..protocol.types import CommittedRoundEntry, ControlPlaneState, InstalledConfig, MembershipState, PendingConfig, PendingConfigStatus, RepairLog, RepairSnapshot, SimulationTiming, bitmap_set
+from ..protocol.types import CommittedRoundRecord, ControlPlaneState, InstalledConfig, JsonDict, MembershipState, PendingConfig, PendingConfigStatus, RepairLog, RepairSnapshot, SimulationTiming, bitmap_set
 
 
 # The current simulator deliberately exposes one conservative control-plane
 # strategy. It reacts to node interruptions, chooses a repair prefix, and then
 # drives rejoin through prepare/ack/commit plus node-local future-round
 # activation. Cluster mediates all transport to and from nodes.
-def _clone_repair_prefix(committed_rounds: tuple[CommittedRoundEntry, ...]) -> RepairLog:
+def _clone_repair_prefix(committed_rounds: tuple[CommittedRoundRecord, ...]) -> RepairLog:
     return RepairLog(entries=tuple(entry.with_timing(commit_time_ns=None, app_delivery_time_ns=None) for entry in committed_rounds))
 
 
@@ -33,10 +33,10 @@ class OnlineRejoinControlPlane:
         self.timing = SimulationTiming()
         self.node_count = 0
         self.current_state: ControlPlaneState | None = None
-        self._repair_log_provider = lambda: []
+        self._repair_snapshot_source = lambda: []
         self._scheduled: list[tuple[int, str, int | None]] = []
-        self._applied: list[dict[str, object]] = []
-        self._observed_events: list[dict[str, object]] = []
+        self._applied: list[JsonDict] = []
+        self._observed_events: list[JsonDict] = []
         self._collecting_targets: set[int] = set()
         self._episode_targets: set[int] = set()
         self._queued_interruptions: dict[int, int] = {}
@@ -52,10 +52,10 @@ class OnlineRejoinControlPlane:
     def set_timing(self, timing: SimulationTiming) -> None:
         self.timing = timing
 
-    def set_repair_log_provider(self, provider) -> None:
+    def set_repair_snapshot_source(self, source) -> None:
         # Runtime supplies a read-only dataplane snapshot function. The control
         # plane owns the recovery policy; runtime only provides visibility.
-        self._repair_log_provider = provider
+        self._repair_snapshot_source = source
 
     def _schedule_action(self, time_ns: int, action: str, episode_id: int | None = None) -> None:
         self._scheduled.append((time_ns, action, episode_id))
@@ -76,7 +76,7 @@ class OnlineRejoinControlPlane:
             node_states={node_id: MembershipState.ACTIVE for node_id in range(node_count)},
         )
 
-    def _refresh_repair_logs(self) -> None:
+    def _rebuild_repair_logs(self) -> None:
         # Recompute repair payloads for nodes currently under recovery. The
         # repair log is exposed through ControlPlaneState and later written into
         # per-node mailbox transactions by ClusterRun.
@@ -94,7 +94,7 @@ class OnlineRejoinControlPlane:
                     pending_config=self.current_state.pending_config,
                 )
             return
-        repair_prefix = _select_repair_prefix(self._repair_log_provider())
+        repair_prefix = _select_repair_prefix(self._repair_snapshot_source())
         if len(repair_prefix) == 0:
             return
         repair_logs = {node_id: repair_prefix for node_id in repair_targets}
@@ -105,8 +105,8 @@ class OnlineRejoinControlPlane:
             repair_logs=repair_logs,
         )
 
-    def refresh_repair_logs(self) -> None:
-        self._refresh_repair_logs()
+    def rebuild_repair_logs(self) -> None:
+        self._rebuild_repair_logs()
 
     def _future_members(self) -> set[int]:
         assert self._pending_future is not None
@@ -383,7 +383,7 @@ class OnlineRejoinControlPlane:
         self._queued_interruptions.setdefault(target, available_at_ns)
         self._begin_collection_window(available_at_ns)
 
-    def _note_prepare_ack(self, event: dict[str, object]) -> None:
+    def _note_prepare_ack(self, event: JsonDict) -> None:
         assert self._pending_future is not None
         config = event.get("config") or {}
         if int(config.get("run_id", -1)) != self._pending_future.run_id:
@@ -420,9 +420,9 @@ class OnlineRejoinControlPlane:
             self._apply_action(action, action_time_ns, episode_id)
         self._begin_collection_window(time_ns)
         self._close_collection_window_if_due(time_ns)
-        self._refresh_repair_logs()
+        self._rebuild_repair_logs()
 
-    def observe_event(self, event: dict[str, object]) -> None:
+    def observe_event(self, event: JsonDict) -> None:
         # Node-originated interruptions and PrepareAck events are delivered here
         # only through ClusterRun; nodes never call into the control plane
         # directly.
@@ -445,10 +445,10 @@ class OnlineRejoinControlPlane:
             self.node_count = node_count
             self.current_state = self._initial_state(node_count)
         self._maybe_activate_cutover(round_id)
-        self._refresh_repair_logs()
+        self._rebuild_repair_logs()
         return self.current_state
 
-    def debug_snapshot(self) -> dict[str, object]:
+    def debug_snapshot(self) -> JsonDict:
         return {
             "scheduled_actions": [
                 {"time_ns": time_ns, "action": action, "episode_id": episode_id}
