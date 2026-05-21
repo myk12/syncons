@@ -5,7 +5,6 @@ split protocol design in modern datacenters. The repository contains:
 
 - a round-based protocol simulator with a synchronous fast path and an
   asynchronous host-side recovery path;
-- evaluation scripts and paper-facing figure generation helpers;
 - an early FPGA-oriented prototype path for the data plane.
 
 ## Repository Layout
@@ -15,7 +14,6 @@ split protocol design in modern datacenters. The repository contains:
   - `runtime/` multi-node execution harness and CLI
   - `control/` recovery and reconfiguration logic
   - `scenarios/` built-in fault scenarios
-- `eval/` — reproducible evaluation entrypoints, scripts, and results
 - `tests/` — regression and invariant checks
 - `prototype/fpga/` — RTL sketches and simple testbenches
 - `docs/` — current protocol and architecture notes
@@ -32,28 +30,10 @@ python3 -m pytest
 Run the core built-in scenarios:
 
 ```bash
-python3 sim/syncons.py perfect
+python3 sim/run_scenario.py perfect --check
 python3 sim/run_scenario.py asymmetric_loss --check
-python3 sim/run_scenario.py bridge_partition --check
+python3 sim/run_scenario.py bridge_partition --check  # split-view partition
 python3 sim/run_scenario.py controlled_rejoin --check
-```
-
-Run randomized robustness sweeps:
-
-```bash
-python3 eval/scripts/run_random_sweeps.py
-```
-
-Run the paper-facing steady-state throughput evaluation end to end:
-
-```bash
-bash eval/run_steady_state_throughput.sh
-```
-
-Run the paper-facing recovery timeline evaluation end to end:
-
-```bash
-bash eval/run_recovery_timeline.sh
 ```
 
 ## Key Concepts

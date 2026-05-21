@@ -19,9 +19,10 @@ The simulator is organized by responsibility under `sim/`:
 
 Thin entrypoints remain at:
 
-- `sim/syncons.py`
 - `sim/run_scenario.py`
 - `sim/random_campaign.py`
+
+The legacy wrapper `sim/syncons.py` is retained for compatibility.
 
 ## Responsibility Boundaries
 
