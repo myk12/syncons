@@ -237,7 +237,7 @@ def parse_args() -> argparse.Namespace:
         except ValueError as exc:
             raise argparse.ArgumentTypeError(str(exc)) from exc
 
-    parser = argparse.ArgumentParser(description="Reference simulator for SynCons.")
+    parser = argparse.ArgumentParser(description="Reference simulator for SSR.")
     parser.add_argument(
         "scenario",
         choices=sorted(SCENARIOS),
@@ -309,13 +309,13 @@ def parse_args() -> argparse.Namespace:
         "--reentry-delay",
         type=duration_arg,
         default=parse_duration_ns("10us"),
-        help="Delay between config installation and dataplane re-entry authorization.",
+        help="Delay between config installation and data-plane restart authorization.",
     )
     parser.add_argument(
         "--app-delivery-delay",
         type=duration_arg,
         default=parse_duration_ns("5us"),
-        help="Delay from dataplane commit to application delivery.",
+        help="Delay from data-plane commit to application delivery.",
     )
     parser.add_argument(
         "--perf-summary",

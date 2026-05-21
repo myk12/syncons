@@ -218,7 +218,7 @@ def finish_sweep(path: Path, rows: list[JsonDict]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate CSV sweeps for SynCons protocol timing studies.")
+    parser = argparse.ArgumentParser(description="Generate CSV sweeps for SSR protocol timing studies.")
     parser.add_argument("--out", type=Path, default=Path("eval/results/protocol_sweeps"))
     parser.add_argument(
         "--timing-profile",

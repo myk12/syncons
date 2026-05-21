@@ -53,7 +53,7 @@ class OnlineRejoinControlPlane:
         self.timing = timing
 
     def set_repair_snapshot_source(self, source) -> None:
-        # Runtime supplies a read-only dataplane snapshot function. The control
+        # Runtime supplies a read-only data-plane snapshot function. The control
         # plane owns the recovery policy; runtime only provides visibility.
         self._repair_snapshot_source = source
 

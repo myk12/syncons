@@ -7,9 +7,9 @@ the simulator.
 
 The control plane becomes active in two cases:
 
-- a live dataplane halts and explicitly raises an interruption;
-- a dataplane crashes and is detected through control-plane polling of
-  dataplane-visible state.
+- a live data plane halts and explicitly raises an interruption;
+- a data plane crashes and is detected through control-plane polling of
+  data-plane-visible state.
 
 Control planes exchange heartbeats in the normal case and use the same
 asynchronous RPC path for recovery coordination after interruption.
@@ -33,7 +33,7 @@ containing:
 This configuration is installed via a standard two-phase commit workflow:
 
 1. the coordinator sends `Prepare`;
-2. each control plane installs the configuration into its local dataplane as a
+2. each control plane installs the configuration into its local data plane as a
    **pending entry** and responds with `PrepareOK` only after installation
    succeeds;
 3. after collecting acknowledgements from the renewed membership, the
@@ -46,7 +46,7 @@ could take effect.
 ## 4. Activation and Failure Cases
 
 After `Commit`, the pending entry becomes committed but not yet active. Each
-dataplane switches to the renewed configuration only when its local round
+data plane switches to the renewed configuration only when its local round
 reaches the activation round.
 
 If the two-phase commit fails, the pending entry is discarded and never takes
@@ -54,9 +54,9 @@ effect.
 
 If some replica fails to install the renewed configuration or misses the
 activation point, it is treated as faulty and excluded from the fast path. Even
-if a dataplane switches to a fresh `run_id` early, it still cannot commit
+if a data plane switches to a fresh `run_id` early, it still cannot commit
 without a matching quorum because messages from other runs are ignored.
 
-The worst case is repeated re-entry into control-plane coordination and
+The worst case is repeated return to control-plane coordination and
 recovery; this can reduce throughput and delay progress, but it does not
 violate correctness.

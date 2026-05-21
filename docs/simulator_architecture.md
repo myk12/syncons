@@ -4,7 +4,7 @@ The simulator is organized by responsibility under `sim/`:
 
 - `sim/protocol/`
   - protocol datatypes;
-  - single-node dataplane logic.
+  - single-node fast-path logic.
 - `sim/runtime/`
   - multi-node execution harness;
   - packet delivery and scheduling;

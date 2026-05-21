@@ -1,17 +1,17 @@
-# SynCons
+# SSR
 
-SynCons is a research prototype for split synchronous replication in modern
-datacenters. The repository contains:
+SSR is a research prototype for synchronous state machine replication with a
+split protocol design in modern datacenters. The repository contains:
 
-- a round-based protocol simulator with a synchronous dataplane and an
-  asynchronous control plane;
+- a round-based protocol simulator with a synchronous fast path and an
+  asynchronous host-side recovery path;
 - evaluation scripts and paper-facing figure generation helpers;
-- an early FPGA-oriented prototype path for the dataplane.
+- an early FPGA-oriented prototype path for the data plane.
 
 ## Repository Layout
 
 - `sim/` — protocol simulator
-  - `protocol/` node-local dataplane logic
+  - `protocol/` node-local fast-path logic
   - `runtime/` multi-node execution harness and CLI
   - `control/` recovery and reconfiguration logic
   - `scenarios/` built-in fault scenarios
@@ -58,20 +58,20 @@ bash eval/run_recovery_timeline.sh
 
 ## Key Concepts
 
-SynCons separates replication by timing requirement:
+SSR separates replication by timing requirement:
 
-- the **dataplane** executes the tightly bounded normal-case fast path;
-- the **control plane** handles interruption, repair, configuration commit, and
-  future-round re-entry.
+- the **data plane** executes the tightly bounded normal-case fast path;
+- the **control plane** handles interruption, state transfer, configuration
+  commit, and future-round restart.
 
-The dataplane derives both a **commit set** and a **sound set** from local
-round-bounded evidence. It continues only when safe continuation is justified;
+The fast path derives both a **commit set** and a **sound set** from per-round
+local evidence. It continues only when safe continuation is justified;
 otherwise it fail-stops and defers liveness restoration to the control plane.
 
 ## Prototype Path
 
-The `prototype/fpga/` subtree is an early hardware-oriented path for the
-dataplane. It is not a complete deployment implementation, but it shows how
+The `prototype/fpga/` subtree is an early hardware-oriented path for the data
+plane. It is not a complete deployment implementation, but it shows how
 the synchronous fast path can map onto an FPGA- or SmartNIC-class substrate.
 
 ## Further Reading

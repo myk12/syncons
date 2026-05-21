@@ -15,9 +15,9 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 SCENARIO_LABELS = {
-    "node_crash": "Node crashes",
+    "node_crash": "Replica crashes",
     "asymmetric_loss": "Asymmetric loss",
-    "bridge_partition": "Bridge partition",
+    "bridge_partition": "Split-view partition",
 }
 
 SCENARIO_ORDER = ["node_crash", "asymmetric_loss", "bridge_partition"]
@@ -320,7 +320,7 @@ def plot_timeline_merged(data: pd.DataFrame, out_path: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot the SynCons recovery throughput timeline.")
+    parser = argparse.ArgumentParser(description="Plot the SSR recovery throughput timeline.")
     parser.add_argument(
         "--file-path",
         type=Path,

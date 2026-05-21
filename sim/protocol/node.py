@@ -294,7 +294,7 @@ class Node:
 
     # TODO:
     # In a real implementation, the repair log will not necessarily install in
-    # the dataplane node itself. A local driver/agent may apply it on the node's
+    # the data-plane node itself. A local driver/agent may apply it on the node's
     # behalf. Here we install it directly in the node model for simulator
     # simplicity, while still routing the write through the cluster-mediated
     # control-plane mailbox.

@@ -41,7 +41,7 @@ def parse_values(raw: str) -> list[float]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate SynCons evaluation sweep CSVs.")
+    parser = argparse.ArgumentParser(description="Generate SSR evaluation sweep CSVs.")
     parser.add_argument("--out", type=Path, default=Path("eval/results/random_sweeps"))
     parser.add_argument("--nodes", type=int, default=3)
     parser.add_argument("--rounds", "--epochs", dest="rounds", type=int, default=8)

@@ -23,9 +23,9 @@ ORDER = ["NOPaxos", "Watchmaker", "8us", "4us", "2us"]
 DISPLAY_LABELS = {
     "NOPaxos": "NOPaxos",
     "Watchmaker": "WatchMaker",
-    "8us": "SynCons-8us",
-    "4us": "SynCons-4us",
-    "2us": "SynCons-2us",
+    "8us": "SSR-8us",
+    "4us": "SSR-4us",
+    "2us": "SSR-2us",
 }
 SYSTEM_STYLE = {
     "NOPaxos": {"facecolor": "#7A4A0C", "edgecolor": "#7A4A0C", "hatch": ""},
@@ -172,7 +172,7 @@ def plot_throughput(data: pd.DataFrame, out_path: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot the SynCons steady-state throughput comparison.")
+    parser = argparse.ArgumentParser(description="Plot the SSR steady-state throughput comparison.")
     parser.add_argument(
         "--file-path",
         type=Path,

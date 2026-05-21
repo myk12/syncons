@@ -2,7 +2,7 @@
   "timing_profile": "paper-baseline",
   "sweeps": "steady",
   "files": [
-    "eval/results/steady_state_throughput/steady_state_throughput.csv"
+    "/Users/mayuke/Project/syncons/eval/results/steady_state_throughput/steady_state_throughput.csv"
   ],
   "steady_rounds": 5000,
   "recovery_rounds": 1500,

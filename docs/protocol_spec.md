@@ -1,23 +1,23 @@
-# SynCons Protocol Specification
+# SSR Protocol Specification
 
 This document defines the current protocol model implemented by the simulator
 and targeted by the prototype hardware path.
 
 ## 1. System Split
 
-SynCons is a split replicated state machine:
+SSR is a split replicated state machine:
 
-- the **dataplane** executes the synchronous fast path;
+- the **data plane** executes the synchronous fast path;
 - the **control plane** handles interruption processing, recovery,
-  reconfiguration, and re-entry.
+  reconfiguration, and restart.
 
-The dataplane is responsible only for normal-case progress under bounded-round
+The data plane is responsible only for normal-case progress under bounded-round
 execution. Whenever local evidence no longer justifies safe continuation, it
 halts conservatively and transfers control to the asynchronous recovery path.
 
-## 2. Core Dataplane Objects
+## 2. Core Fast-Path Objects
 
-The current dataplane protocol revolves around one local row value that yields
+The current fast-path protocol revolves around one local row value that yields
 two distinct decisions:
 
 ```text
@@ -33,7 +33,7 @@ The key terms are:
 - **sound bitmap**: the wire encoding of the local sound set;
 - **sound matrix**: the local matrix formed from received sound bitmaps.
 
-The central dataplane rule is:
+The central fast-path rule is:
 
 ```text
 identify an agreed row
@@ -46,14 +46,14 @@ sound set is a subset of its previous sound set.
 
 ## 3. Timing and Membership
 
-The dataplane executes in globally numbered rounds. At any time the control
+The data plane executes in globally numbered rounds. At any time the control
 plane installs:
 
 - an authoritative membership set;
 - a membership version;
-- a `run_id` identifying the current dataplane run.
+- a `run_id` identifying the current fast-path run.
 
-Only nodes in the installed membership participate in the dataplane. A fresh
+Only nodes in the installed membership participate in the fast path. A fresh
 `run_id` is installed whenever recovery commits a renewed configuration.
 
 For membership `M`, the quorum size is:
@@ -62,9 +62,9 @@ For membership `M`, the quorum size is:
 Q = floor(|M| / 2) + 1
 ```
 
-## 4. Dataplane Safety Model
+## 4. Fast-Path Safety Model
 
-The dataplane explicitly tolerates packet loss, crash, halt, stale replay, and
+The fast path explicitly tolerates packet loss, crash, halt, stale replay, and
 asymmetric visibility by reducing them to one question: can the node still
 prove safe continuation from round-bounded local evidence?
 
@@ -72,13 +72,13 @@ If yes, it commits and continues.
 If no, it fail-stops and emits an interruption.
 
 This conservative behavior is fundamental: liveness may fall back to the
-control plane, but safety remains enforced by the dataplane's own distributed
+control plane, but safety remains enforced by the fast path's own distributed
 rules rather than by assuming recovery always succeeds cleanly.
 
 ## 5. Control-Plane Interaction
 
 Both `NodeHalted` and `NodeCrashed` enter the same control-plane recovery path.
 The control plane repairs interrupted nodes from committed state, installs a
-renewed configuration with a fresh `run_id`, and authorizes re-entry only at a
+renewed configuration with a fresh `run_id`, and authorizes restart only at a
 future activation round. Messages from other runs are ignored, so premature or
 partial reconfiguration cannot create unsafe commits.

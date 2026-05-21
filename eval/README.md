@@ -1,7 +1,7 @@
 # Evaluation
 
 This directory contains the paper-facing evaluation entrypoints for the
-SynCons simulator.
+SSR simulator.
 
 - Top-level `run_*.sh` scripts are the end-to-end entrypoints. Each one runs
   the simulator, exports data, and renders the corresponding figure.
@@ -50,7 +50,7 @@ Each CSV row includes:
 For quick smoke tests:
 
 ```bash
-python3 eval/scripts/run_random_sweeps.py --trials 5 --values 0,0.02 --out /tmp/syncons_sweeps
+python3 eval/scripts/run_random_sweeps.py --trials 5 --values 0,0.02 --out /tmp/ssr_sweeps
 ```
 
 For paper-quality runs, increase `--trials` after the simulator semantics are
