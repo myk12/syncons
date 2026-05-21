@@ -33,7 +33,7 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_perfect,
         node_fault_model=node2_crashes_after_round0,
         rounds=5,
-        description="Node 2 crashes after round 0. Nodes 0 and 1 still send to node 2 for one more round, then shrink their sound set to the surviving pair once the missing row is exposed through the sound matrix.",
+        description="Node 2 crashes after round 0. Nodes 0 and 1 continue as the surviving pair once the missing traffic is exposed by the next round boundary.",
         expectation=ScenarioExpectation(
             statuses=("RUNNING", "RUNNING", "CRASHED"),
             committed_rounds=((0, 1, 2), (0, 1, 2), ()),
@@ -44,7 +44,7 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_asymmetric_loss,
         node_fault_model=all_nodes_active,
         rounds=40,
-        description="One asymmetric drop in round 0 lets nodes 0 and 1 continue on a shrunk sound set while node 2 halts. The control plane then observes the halt, repairs node 2 in the background, and coordinates an online rejoin via prepare/ack/commit cutover.",
+        description="One asymmetric drop in round 0 lets nodes 0 and 1 continue while node 2 halts. The control plane then repairs node 2 in the background and coordinates an online rejoin.",
         expectation=ScenarioExpectation(
             statuses=("RUNNING", "RUNNING", "RUNNING"),
             committed_rounds=(
@@ -59,7 +59,7 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_bridge_partition,
         node_fault_model=all_nodes_active,
         rounds=5,
-        description="Nodes 1 and 2 both miss each other in round 0, creating a split-view partition rather than a clean asymmetric loss. Node 0 still commits round 0 from its complete local view, while nodes 1 and 2 halt immediately on missing commit evidence and node 0 halts one round later once the split view reaches its local sound matrix.",
+        description="Nodes 1 and 2 both miss each other in round 0, creating a partial split rather than a clean asymmetric loss. Node 0 keeps a complete local view for one round, while nodes 1 and 2 halt immediately and node 0 halts one round later.",
         expectation=ScenarioExpectation(
             statuses=("HALTED", "HALTED", "HALTED"),
             committed_rounds=((0,), (), ()),
@@ -70,7 +70,7 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_one_round_delay,
         node_fault_model=all_nodes_active,
         rounds=5,
-        description="A delayed packet perturbs the local sound sets. Node 0 shrinks away from the delayed sender and later halts on the resulting disagreement, while nodes 1 and 2 continue together on the surviving sound set.",
+        description="A delayed packet perturbs the local visibility pattern. Node 0 diverges from the other two nodes and later halts on the resulting disagreement, while nodes 1 and 2 continue together.",
         expectation=ScenarioExpectation(
             statuses=("HALTED", "RUNNING", "RUNNING"),
             committed_rounds=((0,), (0, 1, 2), (0, 1, 2)),
@@ -103,7 +103,7 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_sound_bitmap_corruption,
         node_fault_model=all_nodes_active,
         rounds=5,
-        description="A corrupted sound bitmap causes node 2 to derive an incompatible local sound set and halt, while nodes 0 and 1 continue after committing the same old rounds.",
+        description="A corrupted control payload causes node 2 to derive an incompatible local view and halt, while nodes 0 and 1 continue after committing the same old rounds.",
         expectation=ScenarioExpectation(
             statuses=("RUNNING", "RUNNING", "HALTED"),
             committed_rounds=((0, 1, 2), (0, 1, 2), (0,)),
@@ -129,7 +129,7 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_perfect,
         node_fault_model=node2_reboots_under_control_plane,
         rounds=40,
-        description="Node 2 crashes after round 0, while nodes 0 and 1 continue on a shrunk sound set. The control plane repairs node 2 in the background, runs a prepare/ack/commit cutover, and all nodes switch to a fresh run at a future round boundary.",
+        description="Node 2 crashes after round 0, while nodes 0 and 1 continue together. The control plane repairs node 2 in the background, runs a configuration cutover, and all nodes switch to a fresh run at a future round boundary.",
         expectation=ScenarioExpectation(
             statuses=("RUNNING", "RUNNING", "RUNNING"),
             committed_rounds=(
@@ -143,7 +143,7 @@ SCENARIOS: dict[str, ScenarioSpec] = {
 }
 
 # Primary scenarios are the compact protocol-validation suite we use for
-# everyday reasoning, trace inspection, and paper-facing evaluation.
+# everyday reasoning, trace inspection, and lightweight evaluation.
 PRIMARY_SCENARIOS: tuple[str, ...] = (
     "perfect",
     "node2_crash",

@@ -31,7 +31,7 @@ def network_bridge_partition(packet: Packet, dst: int) -> Delivery:
     if packet.round_id == 0 and ((packet.src_id == 1 and dst == 2) or (packet.src_id == 2 and dst == 1)):
         return Delivery(
             deliver_round=None,
-            reason="split-view partition: nodes 1 and 2 do not see each other in round 0",
+            reason="partial split: nodes 1 and 2 do not see each other in round 0",
         )
     return Delivery(deliver_round=packet.round_id, reason=f"same-round delivery to node {dst}")
 
@@ -53,7 +53,7 @@ def network_bridge_partition_at(
             return Delivery(
                 deliver_round=None,
                 reason=(
-                    "split-view partition: left and right partitions lose direct visibility "
+                    "partial split: left and right partitions lose direct visibility "
                     f"in round {fault_round}"
                 ),
             )

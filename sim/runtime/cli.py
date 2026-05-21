@@ -237,7 +237,7 @@ def parse_args() -> argparse.Namespace:
         except ValueError as exc:
             raise argparse.ArgumentTypeError(str(exc)) from exc
 
-    parser = argparse.ArgumentParser(description="Reference simulator for SSR.")
+    parser = argparse.ArgumentParser(description="Reference simulator for the protocol prototype.")
     parser.add_argument(
         "scenario",
         choices=sorted(SCENARIOS),

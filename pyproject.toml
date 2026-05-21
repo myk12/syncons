@@ -1,7 +1,7 @@
 [project]
 name = "syncons"
 version = "0.1.0"
-description = "SSR protocol simulator, evaluation scripts, and prototype data plane."
+description = "Experimental distributed-protocol simulator and FPGA prototype."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
