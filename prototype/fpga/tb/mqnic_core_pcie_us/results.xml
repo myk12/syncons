@@ -1,0 +1,6 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1780321644" />
+    <testcase name="run_test_ssr_dataplane" classname="test_mqnic_core_pcie_us" file="/Users/mayuke/Project/syncons/prototype/fpga/tb/mqnic_core_pcie_us/test_mqnic_core_pcie_us.py" lineno="721" time="10.6721031665802" sim_time_ns="35471.523438" ratio_time="3323.7612946883264" />
+  </testsuite>
+</testsuites>
