@@ -1,10 +1,28 @@
+# SPDX-License-Identifier: BSD-2-Clause-Views
 # Compilation Corundum NIC with SSR application
 
-# Corundum Environment Variables (adjust as needed)
-CORUNDUM_ROOT ?= ../corundum
-CORUNDUM_BOARD ?= $(CORUNDUM_ROOT)/fpga/mqnic/Alveo/fpga_100g/
-CORUNDUM_COMMON ?= $(CORUNDUM_ROOT)/fpga/common/
+BUILD_DIR := $(CURDIR)/build
+
+ifeq ($(IN_BUILD),1)
+
+# ============================================================
+# Inner build section: real Vivado build runs inside build/
+# ============================================================
+
+# Project paths
+FPGA_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+PROJECT_ROOT := $(abspath $(FPGA_DIR)/..)
+
+# Corundum paths
+CORUNDUM_ROOT ?= $(PROJECT_ROOT)/corundum/
+CORUNDUM_BOARD ?= $(CORUNDUM_ROOT)/fpga/mqnic/Alveo/fpga_100g
+CORUNDUM_COMMON ?= $(CORUNDUM_ROOT)/fpga/common
 CORUNDUM_LIB ?= $(CORUNDUM_ROOT)/fpga/lib/
+SSR_APP_DIR := $(PROJECT_ROOT)/fpga/
+
+# Local paths
+LOCAL_RTL_DIR := $(FPGA_DIR)/rtl
+LOCAL_CONFIG_TCL := $(FPGA_DIR)/config.tcl
 
 #FPGA settings
 FPGA_PART = xcu200-fsgd2104-2-e
@@ -65,8 +83,8 @@ SYN_FILES += $(CORUNDUM_COMMON)/rtl/cmac_pad.v
 SYN_FILES += $(CORUNDUM_COMMON)/rtl/mac_ts_insert.v
 
 # Application-specific files
-SYN_FILES += rtl/mqnic_app_block_ssr_dataplane.v
-SYN_FILES += rtl/ssr_dataplane.v
+SYN_FILES += $(SSR_APP_DIR)/rtl/mqnic_app_block_ssr_dataplane.v
+SYN_FILES += $(SSR_APP_DIR)/rtl/ssr_dataplane.v
 
 # Library files
 SYN_FILES += $(CORUNDUM_LIB)/eth/rtl/ptp_td_phc.v
@@ -82,6 +100,7 @@ SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_cdc_rd.v
 SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_cdc_wr.v
 SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_interconnect.v
 SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_crossbar.v
+SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_crossbar_addr.v
 SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_crossbar_rd.v
 SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_crossbar_wr.v
 SYN_FILES += $(CORUNDUM_LIB)/axi/rtl/axil_reg_if.v
@@ -95,9 +114,6 @@ SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_adapter.v
 SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_arb_mux.v
 SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_async_fifo.v
 SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_async_fifo_adapter.v
-SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_demux.v
-SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_fifo.v
-SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_fifo_adapter.v
 SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_demux.v
 SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_fifo.v
 SYN_FILES += $(CORUNDUM_LIB)/axis/rtl/axis_fifo_adapter.v
@@ -155,12 +171,12 @@ XDC_FILES += $(CORUNDUM_COMMON)/syn/vivado/cmac_gty_ch_wrapper.tcl
 # IP
 IP_TCL_FILES = $(CORUNDUM_BOARD)/ip/pcie4_uscale_plus_0.tcl
 IP_TCL_FILES += $(CORUNDUM_BOARD)/ip/cmac_usplus.tcl
-IP_TCL_FILES += $(CORUNDUM_COMMON)/ip/cmac_gty.tcl
-IP_TCL_FILES += $(CORUNDUM_COMMON)/ip/cms.tcl
-IP_TCL_FILES += $(CORUNDUM_COMMON)/ip/ddr4_0.tcl
+IP_TCL_FILES += $(CORUNDUM_BOARD)/ip/cmac_gty.tcl
+IP_TCL_FILES += $(CORUNDUM_BOARD)/ip/cms.tcl
+IP_TCL_FILES += $(CORUNDUM_BOARD)/ip/ddr4_0.tcl
 
-# Configration
-CONFIG_TCL_FILES = ./config.tcl
+# Configuration
+CONFIG_TCL_FILES = $(LOCAL_CONFIG_TCL)
 
 include $(CORUNDUM_BOARD)/common/vivado.mk
 
@@ -176,3 +192,34 @@ program: $(FPGA_TOP).bit
 	echo "set_property PROGRAM.FILE {$(FPGA_TOP).bit} [current_hw_device]" >> program.tcl
 	echo "exit" >> program.tcl
 	vivado -nojournal -nolog -mode batch -source program.tcl
+else
+# ============================================================
+# Outer build section: this is the Makefile that gets called by the user
+# ============================================================
+
+.PHONY: all clean program clean distclean
+
+all: fpga
+
+fpga:
+	mkdir -p $(BUILD_DIR)
+	ln -sf ../Makefile $(BUILD_DIR)/Makefile
+	$(MAKE) -C $(BUILD_DIR) -f ../Makefile IN_BUILD=1 fpga
+
+program:
+	mkdir -p $(BUILD_DIR)
+	ln -sf ../Makefile $(BUILD_DIR)/Makefile
+	$(MAKE) -C $(BUILD_DIR) -f ../Makefile IN_BUILD=1 program
+
+clean:
+	if [ -d $(BUILD_DIR) ]; \
+		then ln -sf ../Makefile $(BUILD_DIR)/Makefile; \
+		fi
+	if [ -f $(BUILD_DIR)/Makefile ]; then \
+		$(MAKE) -C $(BUILD_DIR) -f ../Makefile IN_BUILD=1 clean; \
+	fi
+
+distclean: clean
+	rm -rf $(BUILD_DIR)
+
+endif

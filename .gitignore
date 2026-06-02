@@ -1,8 +1,8 @@
 # ==============================================================================
 # 1. Build & Simulation Artifacts (Current Workflow)
 # ==============================================================================
-fpga/build/
-fpga/*.vcd
+prototype/fpga/build/
+prototype/fpga/*.vcd
 
 # Icarus Verilog generated files
 *.out

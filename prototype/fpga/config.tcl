@@ -120,14 +120,14 @@ dict set params AXI_DDR_ID_WIDTH "8"
 dict set params AXI_DDR_MAX_BURST_LEN "256"
 
 # Application block configuration
-dict set params APP_ID "32'h00000000"
-dict set params APP_ENABLE "0"
+dict set params APP_ID "32'h53535201"
+dict set params APP_ENABLE "1"
 dict set params APP_CTRL_ENABLE "1"
-dict set params APP_DMA_ENABLE "1"
-dict set params APP_AXIS_DIRECT_ENABLE "1"
-dict set params APP_AXIS_SYNC_ENABLE "1"
-dict set params APP_AXIS_IF_ENABLE "1"
-dict set params APP_STAT_ENABLE "1"
+dict set params APP_DMA_ENABLE "0"
+dict set params APP_AXIS_DIRECT_ENABLE "0"
+dict set params APP_AXIS_SYNC_ENABLE "0"
+dict set params APP_AXIS_IF_ENABLE "0"
+dict set params APP_STAT_ENABLE "0"
 
 # DMA interface configuration
 dict set params DMA_IMM_ENABLE "0"
