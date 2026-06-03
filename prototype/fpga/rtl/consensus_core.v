@@ -123,6 +123,10 @@ reg [7:0]                       r_rx_number;                            // numbe
 wire [P_NODE_COUNT-1:0]         derived_sound_set;
 wire [P_NODE_COUNT-1:0]         commit_set;
 
+reg last_slot_pulse;
+wire round_boundary;
+reg [1:0] eval_counter;
+
 wire [P_NODE_COUNT-1:0] row_matches; // which nodes' proposals match the commit set
 wire [2:0] witness_count;
 wire agreed_row_valid;
@@ -136,10 +140,10 @@ wire [2:0]                      quorum;
 wire halt;
 
 // propose padding with NODE_ID
-assign o_tx_propose = {P_LOG_ITEM_LEN{P_NODE_ID[7:0]}};
+assign o_tx_propose = i_ctrl_host_payload;
 
 // global loop variables
-integer i, j, k;
+integer i, j, k, m, n;
 
 // ------------------------------------------------
 //              3. combinational logic
@@ -180,8 +184,8 @@ always @(*) begin
     case (state)
         S_IDLE:     if (i_ctrl_activate)        next_state = S_COLLECT;
         S_COLLECT: begin
-            if (round_boundary && !halt)        next_state = S_BOUNDARY;
-            else if (round_boundary && halt)    next_state = S_FAIL_DETECT;
+            if (round_boundary && (eval_counter < 2 || !halt))        next_state = S_COLLECT;
+            else if (round_boundary && halt)    next_state = S_HALT;
         end
         S_HALT: if (i_ctrl_reboot)              next_state = S_IDLE;
     endcase
@@ -190,15 +194,13 @@ end
 // -------------------------
 // Round start detector
 // -------------------------
-reg last_slot_pulse;
-wire round_boundary;
 
 always @(posedge clk, negedge rst_n) begin
     if (!rst_n) last_slot_pulse <= 1'b0;
     else last_slot_pulse <= i_new_slot_pulse;
 end
 
-assign round_boundary = last_slot_pulse == i_new_slot_pulse ? 1'b0 : 1'b1;
+assign round_boundary = !last_slot_pulse & i_new_slot_pulse;
 
 // -------------------------
 // Clocked registers for stages
@@ -210,6 +212,13 @@ always @(posedge clk, negedge rst_n) begin
         stage_evidence <= '0;
         stage_commit <= '0;
         o_system_halt <= 1'b0;
+        
+        o_commit_log <= '0;
+        o_commit_valid <= {P_NODE_COUNT{1'b0}};
+        o_alive_mask <= {P_NODE_COUNT{1'b1}};
+        o_tx_knowledge_vec <= {P_NODE_COUNT{1'b0}};
+
+        eval_counter <= 0;
     end else begin
         case (state)
             S_IDLE: if (i_ctrl_activate) begin
@@ -240,6 +249,7 @@ always @(posedge clk, negedge rst_n) begin
                 end
                 
                 if (round_boundary) begin
+                    eval_counter <= eval_counter >= 2 ? eval_counter : eval_counter + 1;
                     stage_commit <= stage_evidence;
 
                     stage_evidence.round_id <= stage_curr.round_id;
@@ -261,13 +271,16 @@ always @(posedge clk, negedge rst_n) begin
                     end
 
 
-                    if (commit_set_valid) begin
-                        for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
-                            if (commit_set[i]) begin
-                                o_commit_log[i*P_LOG_ITEM_LEN*8 +: P_LOG_ITEM_LEN*8] <= stage_commit.proposals[i];
-                                o_commit_valid[i] <= 1'b1;
+                    if (commit_set_valid && eval_counter >= 2) begin
+                        o_tx_knowledge_vec <= derived_sound_set;
+                        for (j = 0; j < P_NODE_COUNT; j = j + 1) begin
+                            if (commit_set[j]) begin
+                                o_commit_log[j*P_LOG_ITEM_LEN*8 +: P_LOG_ITEM_LEN*8] <= stage_commit.proposals[j];
+                                o_commit_valid[j] <= 1'b1;
+                                o_alive_mask[j] <= 1'b1;
                             end else begin
                                 o_commit_valid[i] <= 1'b0;
+                                o_alive_mask[i] <= 1'b0;
                             end
                         end
                     end else begin
@@ -275,7 +288,7 @@ always @(posedge clk, negedge rst_n) begin
                     end
                 end
 
-                if (halt) begin
+                if (halt && eval_counter >= 2) begin
                     stage_curr <= '0;
                     stage_evidence <= '0;
                     stage_commit <= '0;
@@ -285,6 +298,10 @@ always @(posedge clk, negedge rst_n) begin
 
             S_HALT: begin
                 o_system_halt <= 1'b1;
+                stage_curr <= '0;
+                stage_evidence <= '0;
+                stage_commit <= '0;
+                o_alive_mask <= {P_NODE_COUNT{1'b0}};
             end
         endcase
     end
@@ -296,22 +313,31 @@ end
 assign membership_count = count_ones(stage_commit.installed_membership);
 assign quorum = (membership_count >> 1) + 1;
 
+wire [P_NODE_COUNT-1:0] row_valid;
+
 genvar k;
 generate
-    for (k = 0; k < P_NODE_COUNT; k = k + 1) begin : cons_check
-        assign row_matches[k] = (stage_commit.installed_membership[k] && (stage_commit.sound_matrix[k] == stage_commit.sound_bitmap));
+    for (k = 0; k < P_NODE_COUNT; k = k + 1) begin
+        assign row_valid[k] = (stage_commit.sound_matrix[k] == 0) || (stage_commit.sound_matrix[k][k]);
+    end
+endgenerate
+
+genvar m;
+generate
+    for (m = 0; m < P_NODE_COUNT; m = m + 1) begin : cons_check
+        assign row_matches[m] = (stage_commit.installed_membership[m] && (stage_commit.sound_matrix[m] == stage_commit.sound_bitmap));
     end
 endgenerate
 
 assign witness_count = count_ones(row_matches);
-assign agreed_row_valid = witness_count >= quorum;
+assign agreed_row_valid = (count_ones(row_valid) == membership_count) && (stage_commit.sound_bitmap != 0) && (witness_count >= quorum);
 
 assign derived_sound_set = agreed_row_valid ? row_matches : {P_NODE_COUNT{1'b0}};
 
-genvar j;
+genvar n;
 generate
-    for (j = 0; j < P_NODE_COUNT; j = j + 1) begin
-        assign proprosal_present[j] = |stage_commit.proposals[j];
+    for (n = 0; n < P_NODE_COUNT; n = n + 1) begin
+        assign proprosal_present[n] = |stage_commit.proposals[n];
     end
 endgenerate
 
