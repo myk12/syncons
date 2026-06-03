@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 [project]
 name = "syncons"
 version = "0.1.0"
@@ -8,3 +9,15 @@ dependencies = [
     "loguru>=0.7.3",
     "seaborn>=0.13.2",
 ]
+=======
+[project]
+name = "syncons"
+version = "0.1.0"
+description = "SSR protocol simulator and prototype data plane."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "loguru>=0.7.3",
+    "seaborn>=0.13.2",
+]
+>>>>>>> 45bffb18676507d8032deadab249c9b64ef2cb1a
