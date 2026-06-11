@@ -17,7 +17,16 @@ description = "SSR protocol simulator and prototype data plane."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "cocotb-test>=0.2.6",
     "loguru>=0.7.3",
+    "scapy>=2.7.0",
     "seaborn>=0.13.2",
 ]
->>>>>>> 45bffb18676507d8032deadab249c9b64ef2cb1a
+
+[dependency-groups]
+dev = [
+    "cocotb>=1.8,<2",
+    "cocotbext-axi>=0.1.28",
+    "cocotbext-eth>=0.1.22",
+    "cocotbext-pcie>=0.2.16",
+]

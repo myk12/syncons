@@ -4,7 +4,7 @@
 TOPLEVEL_LANG = verilog
 
 SIM ?= icarus
-WAVES ?= 0
+WAVES ?= 1
 
 COCOTB_HDL_TIMEUNIT = 1ns
 COCOTB_HDL_TIMEPRECISION = 1ps
@@ -58,6 +58,7 @@ VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/common/rtl/tx_scheduler_rr.v
 # Application block sources
 VERILOG_SOURCES += ../../rtl/mqnic_app_block_ssr_dataplane.v
 VERILOG_SOURCES += ../../rtl/ssr_dataplane.v
+VERILOG_SOURCES += ../../rtl/proposal_queue.v
 # Ethernet sources
 VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/lib/eth/rtl/mac_ctrl_rx.v
 VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/lib/eth/rtl/mac_ctrl_tx.v
@@ -208,7 +209,7 @@ export PARAM_AXI_HBM_MAX_BURST_LEN := 16
 export PARAM_APP_ID := $(shell echo $$((0x53535201)) )
 export PARAM_APP_ENABLE := 1
 export PARAM_APP_CTRL_ENABLE := 0
-export PARAM_APP_DMA_ENABLE := 0
+export PARAM_APP_DMA_ENABLE := 1
 export PARAM_APP_AXIS_DIRECT_ENABLE := 0
 export PARAM_APP_AXIS_SYNC_ENABLE := 0
 export PARAM_APP_AXIS_IF_ENABLE := 0

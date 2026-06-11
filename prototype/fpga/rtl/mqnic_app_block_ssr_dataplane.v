@@ -665,12 +665,12 @@ assign ctrl_dma_ram_rd_resp_valid = ctrl_dma_ram_rd_cmd_valid;
 /*
  * DMA interface (data)
  */
-assign m_axis_data_dma_read_desc_dma_addr = 0;
-assign m_axis_data_dma_read_desc_ram_sel = 0;
-assign m_axis_data_dma_read_desc_ram_addr = 0;
-assign m_axis_data_dma_read_desc_len = 0;
-assign m_axis_data_dma_read_desc_tag = 0;
-assign m_axis_data_dma_read_desc_valid = 1'b0;
+//assign m_axis_data_dma_read_desc_dma_addr = 0;
+//assign m_axis_data_dma_read_desc_ram_sel = 0;
+//assign m_axis_data_dma_read_desc_ram_addr = 0;
+//assign m_axis_data_dma_read_desc_len = 0;
+//assign m_axis_data_dma_read_desc_tag = 0;
+//assign m_axis_data_dma_read_desc_valid = 1'b0;
 assign m_axis_data_dma_write_desc_dma_addr = 0;
 assign m_axis_data_dma_write_desc_ram_sel = 0;
 assign m_axis_data_dma_write_desc_ram_addr = 0;
@@ -680,11 +680,11 @@ assign m_axis_data_dma_write_desc_len = 0;
 assign m_axis_data_dma_write_desc_tag = 0;
 assign m_axis_data_dma_write_desc_valid = 1'b0;
 
-assign data_dma_ram_wr_cmd_ready = 1'b1;
-assign data_dma_ram_wr_done = data_dma_ram_wr_cmd_valid;
-assign data_dma_ram_rd_cmd_ready = ctrl_dma_ram_rd_resp_ready;
-assign data_dma_ram_rd_resp_data = 0;
-assign data_dma_ram_rd_resp_valid = data_dma_ram_rd_cmd_valid;
+//assign data_dma_ram_wr_cmd_ready = 1'b1;
+//assign data_dma_ram_wr_done = data_dma_ram_wr_cmd_valid;
+//assign data_dma_ram_rd_cmd_ready = ctrl_dma_ram_rd_resp_ready;
+//assign data_dma_ram_rd_resp_data = 0;
+//assign data_dma_ram_rd_resp_valid = data_dma_ram_rd_cmd_valid;
 
 /*
  * Ethernet (direct MAC interface - lowest latency raw traffic)
@@ -903,7 +903,24 @@ ssr_dataplane #(
     // register interface parameters
     .REG_ADDR_WIDTH(REG_ADDR_WIDTH),
     .REG_DATA_WIDTH(REG_DATA_WIDTH),
-    .REG_STRB_WIDTH(REG_STRB_WIDTH)
+    .REG_STRB_WIDTH(REG_STRB_WIDTH),
+
+    // SSR configuration parameters
+    .MAX_REPLICAS(7),
+
+    // DMA interface parameters
+    .DMA_ADDR_WIDTH(DMA_ADDR_WIDTH),
+    .DMA_IMM_ENABLE(DMA_IMM_ENABLE),
+    .DMA_IMM_WIDTH(DMA_IMM_WIDTH),
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+    .DMA_TAG_WIDTH(DMA_TAG_WIDTH),
+    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
+    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
+    .RAM_SEG_COUNT(RAM_SEG_COUNT),
+    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
+    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
+    .RAM_SEG_ADDR_WIDTH(RAM_SEG_ADDR_WIDTH),
+    .RAM_PIPELINE(RAM_PIPELINE)
 ) ssr_dataplane_inst (
     .clk(clk),
     .rst(rst),
@@ -919,7 +936,38 @@ ssr_dataplane #(
     .reg_rd_data(ctrl_reg_rd_data),
     .reg_rd_en(ctrl_reg_rd_en),
     .reg_rd_wait(ctrl_reg_rd_wait),
-    .reg_rd_ack(ctrl_reg_rd_ack)    
+    .reg_rd_ack(ctrl_reg_rd_ack),
+
+    // DMA read descriptor output
+    .m_axis_data_dma_read_desc_dma_addr(m_axis_data_dma_read_desc_dma_addr),
+    .m_axis_data_dma_read_desc_ram_sel(m_axis_data_dma_read_desc_ram_sel),
+    .m_axis_data_dma_read_desc_ram_addr(m_axis_data_dma_read_desc_ram_addr),
+    .m_axis_data_dma_read_desc_len(m_axis_data_dma_read_desc_len),
+    .m_axis_data_dma_read_desc_tag(m_axis_data_dma_read_desc_tag),
+    .m_axis_data_dma_read_desc_valid(m_axis_data_dma_read_desc_valid),
+    .m_axis_data_dma_read_desc_ready(m_axis_data_dma_read_desc_ready),
+
+    // DMA read descriptor status input
+    .s_axis_data_dma_read_desc_status_tag(s_axis_data_dma_read_desc_status_tag),
+    .s_axis_data_dma_read_desc_status_error(s_axis_data_dma_read_desc_status_error),
+    .s_axis_data_dma_read_desc_status_valid(s_axis_data_dma_read_desc_status_valid),
+
+    // DMA RAM interface (data)
+    .data_dma_ram_wr_cmd_sel(data_dma_ram_wr_cmd_sel),
+    .data_dma_ram_wr_cmd_be(data_dma_ram_wr_cmd_be),
+    .data_dma_ram_wr_cmd_addr(data_dma_ram_wr_cmd_addr),
+    .data_dma_ram_wr_cmd_data(data_dma_ram_wr_cmd_data),
+    .data_dma_ram_wr_cmd_valid(data_dma_ram_wr_cmd_valid),
+    .data_dma_ram_wr_cmd_ready(data_dma_ram_wr_cmd_ready),
+    .data_dma_ram_wr_done(data_dma_ram_wr_done),
+
+    .data_dma_ram_rd_cmd_sel(data_dma_ram_rd_cmd_sel),
+    .data_dma_ram_rd_cmd_addr(data_dma_ram_rd_cmd_addr),
+    .data_dma_ram_rd_cmd_valid(data_dma_ram_rd_cmd_valid),
+    .data_dma_ram_rd_cmd_ready(data_dma_ram_rd_cmd_ready),
+    .data_dma_ram_rd_resp_data(data_dma_ram_rd_resp_data),
+    .data_dma_ram_rd_resp_valid(data_dma_ram_rd_resp_valid),
+    .data_dma_ram_rd_resp_ready(data_dma_ram_rd_resp_ready)
 );
 
 endmodule

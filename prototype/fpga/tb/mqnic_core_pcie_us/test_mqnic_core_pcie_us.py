@@ -733,8 +733,9 @@ async def run_test_ssr_dataplane(dut):
     tb.log.info("Init complete")
 
     tb.log.info("TEST SSR Application")
-    SSR_RB_TYPE = 0x53535201
-    SSR_RB_VERSION = 0x00000100
+    SSR_RB_TYPE     = 0x53535201
+    SSR_RB_VERSION  = 0x00000100
+    SSR_RB_FEATURES = 0x0000000f
 
     app_reg_blocks = mqnic.RegBlockList()
     await app_reg_blocks.enumerate_reg_blocks(tb.driver.app_hw_regs)
@@ -743,11 +744,14 @@ async def run_test_ssr_dataplane(dut):
     ssr_rb = app_reg_blocks.find(SSR_RB_TYPE, SSR_RB_VERSION)
     assert ssr_rb is not None, "SSR register block not found"
 
+    # ----------------------------------------------------------------------
+    #           Basic register read/write tests
+    # ----------------------------------------------------------------------   
     # check SSR register block
     tb.log.info("Check SSR register block")
     assert await ssr_rb.read_dword(0x00) == SSR_RB_TYPE, "Invalid SSR register block type"
     assert await ssr_rb.read_dword(0x04) == SSR_RB_VERSION, "Invalid SSR register block version"
-    assert await ssr_rb.read_dword(0x0c) == 0x0000000f, "Invalid SSR register block control"
+    assert await ssr_rb.read_dword(0x0c) == SSR_RB_FEATURES, "Invalid SSR register block features"
 
     # test scratch register
     tb.log.info("Test SSR scratch register")
@@ -786,4 +790,30 @@ async def run_test_ssr_dataplane(dut):
         mac_int_rd = (await ssr_rb.read_dword(0x100 + i*8)) | ((await ssr_rb.read_dword(0x100 + i*8 + 4)) << 32)
         assert mac_int_rd == mac_int, "SSR MAC address register read/write failed"
 
-    tb.log.info("Test SSR application PASS")
+    # ----------------------------------------------------------------------
+    #           SSR application DMA read test
+    # ----------------------------------------------------------------------
+    # allocate DMA buffer and fill with test data
+    tb.log.info("SSR application DMA read test")
+    mem = tb.rc.mem_pool.alloc_region(16*1024*1024)
+    mem_base = mem.get_absolute_address(0)
+
+    tb.log.info("Fill DMA buffer with test data")
+    mem[0:1024] = bytearray([x % 256 for x in range(1024)])
+
+    # write pcie read descriptor
+    tb.log.info("Write SSR DMA read descriptor")
+    await ssr_rb.write_dword(0x1000, (mem_base+0x0000) & 0xffffffff)                # address low
+    await ssr_rb.write_dword(0x1004, (mem_base+0x0000 >> 32) & 0xffffffff)          # address high
+    await ssr_rb.write_dword(0x1008, 1024)                                      # length
+    await ssr_rb.write_dword(0x100c, 0x00000001)                                  # control (set start bit)
+
+    tb.log.info("Start SSR DMA read")
+    await Timer(2000, 'ns')
+
+    # read status and check for completion
+    tb.log.info("Read SSR DMA read status")
+    status = await ssr_rb.read_dword(0x1010)
+
+    tb.log.info("SSR DMA read status: 0x%08x", status)
+
