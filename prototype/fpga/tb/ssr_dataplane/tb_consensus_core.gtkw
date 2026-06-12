@@ -1,15 +1,15 @@
 [*]
 [*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
-[*] Wed Jun 10 12:30:14 2026
+[*] Fri Jun 12 12:43:26 2026
 [*]
 [dumpfile] "/home/yaomat/syncons/prototype/fpga/tb/ssr_dataplane/tb_consensus_core.vcd"
-[dumpfile_mtime] "Wed Jun 10 12:22:20 2026"
-[dumpfile_size] 34837
+[dumpfile_mtime] "Fri Jun 12 12:41:55 2026"
+[dumpfile_size] 48753
 [savefile] "/home/yaomat/syncons/prototype/fpga/tb/ssr_dataplane/tb_consensus_core.gtkw"
-[timestart] 761900
+[timestart] 4529400
 [size] 1920 1093
 [pos] -27 -24
-*-17.000000 985000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+*-17.000000 4824900 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] tb_consensus_core.
 [treeopen] tb_consensus_core.uut.
 [sst_width] 297
@@ -63,6 +63,10 @@ tb_consensus_core.uut.s_evidence_installed_membership[4:0]
 tb_consensus_core.uut.s_evidence_membership_epoch[63:0]
 tb_consensus_core.uut.s_evidence_round_id[63:0]
 tb_consensus_core.uut.s_evidence_sound_bitmap[4:0]
+tb_consensus_core.dbg_evidence_matrix_0[4:0]
+tb_consensus_core.dbg_evidence_matrix_1[4:0]
+@23
+tb_consensus_core.dbg_evidence_matrix_2[4:0]
 @200
 -Commit Stage
 @22
@@ -70,6 +74,9 @@ tb_consensus_core.uut.s_commit_installed_membership[4:0]
 tb_consensus_core.uut.s_commit_membership_epoch[63:0]
 tb_consensus_core.uut.s_commit_round_id[63:0]
 tb_consensus_core.uut.s_commit_sound_bitmap[4:0]
+tb_consensus_core.dbg_commit_matrix_0[4:0]
+tb_consensus_core.dbg_commit_matrix_1[4:0]
+tb_consensus_core.dbg_commit_matrix_2[4:0]
 @200
 -UUT Internals
 @28
@@ -91,7 +98,7 @@ tb_consensus_core.uut.halt
 tb_consensus_core.uut.r_current_sound_set[4:0]
 @28
 tb_consensus_core.uut.eval_counter[1:0]
-@23
+@22
 tb_consensus_core.uut.derived_sound_set[4:0]
 @200
 -Outputs

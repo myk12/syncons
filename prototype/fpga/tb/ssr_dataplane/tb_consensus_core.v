@@ -85,6 +85,14 @@ consensus_core #(
      .o_tx_propose(o_tx_propose)
 );
 
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_0 = uut.s_evidence_sound_matrix[0];
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_1 = uut.s_evidence_sound_matrix[1];
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_2 = uut.s_evidence_sound_matrix[2];
+
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_0 = uut.s_commit_sound_matrix[0];
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_1 = uut.s_commit_sound_matrix[1];
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_2 = uut.s_commit_sound_matrix[2];
+
 //================================================
 // Clock Generation
 //================================================
@@ -117,8 +125,8 @@ initial begin
     
     #100;
     
-    // Test Case 2: Node 2 Fails
-    $display("\nTest Case 2: Node 2 Fails");
+    // Test Case 2: Node 1 cannot receive packets from node 0
+    $display("\nTest Case 2: Node 1 cannot receive packets from node 0");
     rst_n = 0;
     #10 rst_n = 1;
     #10;
@@ -267,20 +275,20 @@ task test_node_failure;
     reg [P_NODE_COUNT-1:0] active_nodes;
     reg [P_NODE_COUNT-1:0] sound_bitmaps [0:P_NODE_COUNT-1];
     begin
-        active_nodes = 3'b011;  // Only nodes 0, 1 (node 2 failed)
+        active_nodes = 3'b111;
         
-        // Nodes 0, 1 see each other; node 2 missing from their bitmaps
-        sound_bitmaps[0] = 3'b011;
-        sound_bitmaps[1] = 3'b011;
-        // node 2 doesn't send
+        sound_bitmaps[0] = 3'b111;
+        sound_bitmaps[1] = 3'b111;
+        sound_bitmaps[2] = 3'b111;
         
         initialize_core(3'b111);  // Core was configured for 3 nodes
         
         // Warmup
-        for (round = 0; round < 2; round = round + 1) begin
-            trigger_round_with_packets(round, 1, active_nodes, {sound_bitmaps[2], sound_bitmaps[1], sound_bitmaps[0]});
-        end
-        
+        trigger_round_with_packets(0, 1, active_nodes, {sound_bitmaps[2], sound_bitmaps[1], sound_bitmaps[0]});
+        active_nodes[1] = 0; // Node 1 fails after round 0
+        trigger_round_with_packets(1, 1, active_nodes, {sound_bitmaps[2], sound_bitmaps[1], sound_bitmaps[0]});
+        sound_bitmaps[2] = 3'b101;
+
         // Real evaluation with reduced set
         for (round = 2; round < 5; round = round + 1) begin
             trigger_round_with_packets(round, 1, active_nodes, {sound_bitmaps[2], sound_bitmaps[1], sound_bitmaps[0]});
@@ -298,7 +306,7 @@ task test_network_partition;
     reg [P_NODE_COUNT-1:0] sound_bitmaps [0:P_NODE_COUNT-1];
     begin
         // Network partition: nodes 0,1 isolated from 2,3,4
-        active_nodes = 5'b11111;  // All 5 nodes send packets
+        active_nodes = 5'b00011;
         
         // Node 0 sees only 0,1; Node 1 sees only 0,1
         sound_bitmaps[0] = 5'b00011;

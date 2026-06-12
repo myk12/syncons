@@ -59,36 +59,6 @@ module consensus_core #(
     output reg [P_NODE_COUNT-1:0]                       o_commit_valid
 );
 
-// typedef struct packed {
-//     reg [63:0] round_id;
-//     reg [P_NODE_COUNT-1:0] installed_membership;
-//     reg [P_MEMBERSHIP_EPOCH_WIDTH-1:0] membership_epoch;
-//     reg [P_NODE_COUNT-1:0] sound_bitmap;
-//     reg [P_LOG_ITEM_LEN*8-1:0] proposals [0:P_NODE_COUNT-1];
-// } s_curr;
-
-// typedef struct packed {
-//     reg [63:0] round_id;
-//     reg [P_NODE_COUNT-1:0] installed_membership;
-//     reg [P_MEMBERSHIP_EPOCH_WIDTH-1:0] membership_epoch;
-//     reg [P_NODE_COUNT-1:0] sound_bitmap;
-//     reg [P_LOG_ITEM_LEN*8-1:0] proposals [0:P_NODE_COUNT-1];
-//     reg [P_NODE_COUNT-1:0] sound_matrix [0:P_NODE_COUNT-1];
-// } s_ev;
-
-// typedef struct packed {
-//     reg [63:0] round_id;
-//     reg [P_NODE_COUNT-1:0] installed_membership;
-//     reg [P_MEMBERSHIP_EPOCH_WIDTH-1:0] membership_epoch;
-//     reg [P_NODE_COUNT-1:0] sound_bitmap;
-//     reg [P_LOG_ITEM_LEN*8-1:0] proposals [0:P_NODE_COUNT-1];
-//     reg [P_NODE_COUNT-1:0] sound_matrix [0:P_NODE_COUNT-1];
-// } s_com;
-
-// s_curr  stage_curr;
-// s_ev    stage_evidence;
-// s_com   stage_commit;
-
 // current stage
 reg [63:0]                          s_curr_round_id;
 reg [P_NODE_COUNT-1:0]              s_curr_installed_membership;
@@ -124,12 +94,6 @@ reg [1:0]   state, next_state;
 //------------------------------------------------
 //         Internal Storage (Buffer)
 //------------------------------------------------
-// global status of each node
-reg [P_NODE_COUNT-1:0]          r_alive_mask;                           // alive mask
-reg [P_NODE_COUNT-1:0]          r_sound_matrix [0:P_NODE_COUNT-1];  // sound matrix
-reg [P_NODE_COUNT-1:0]          r_rx_mask;
-reg [P_NODE_COUNT-1:0]          r_last_rx_mask;     // This is my own knowledge vector
-reg [P_NODE_COUNT-1:0]          r_sound_bitmap;                           // derived sound bitmap based on received packets
 reg [P_NODE_COUNT-1:0]          r_current_sound_set;                     // current sound set based on received packets
 
 // config regs that come from the control plane at the start of each run
@@ -137,29 +101,37 @@ reg [63:0] config_run_id;
 reg [P_NODE_COUNT-1:0] config_installed_membership; // bitmap of installed membership
 
 // logs in this slot
-reg [P_LOG_ITEM_LEN*8-1:0]      r_propose_log [0:P_NODE_COUNT-1];       // proposed logs
+// reg [P_LOG_ITEM_LEN*8-1:0]      r_propose_log [0:P_NODE_COUNT-1];       // proposed logs
 reg [P_LOG_ITEM_LEN*8-1:0]      r_commit_log [0:P_NODE_COUNT-1];        // acknowledged logs
 // reg [P_NODE_COUNT-1:0]         r_consensus_reached;                    // consensus reached for each node
-reg [7:0]                       r_rx_number;                            // number of received packets
-
+// reg [7:0]                       r_rx_number;                            // number of received packets
 
 // boundary evaluation wires
-wire [P_NODE_COUNT-1:0]         derived_sound_set;
-wire [P_NODE_COUNT-1:0]         commit_set;
+wire [2:0]              membership_count;
+wire [2:0]              quorum;
+
+wire [P_NODE_COUNT-1:0] row_valid;
+wire [P_NODE_COUNT-1:0] row_matches; // which nodes' proposals match the commit set
+wire [2:0]              witness_count;
+wire                    agreed_row_valid;
+wire [P_NODE_COUNT-1:0] derived_sound_set;
+wire [P_NODE_COUNT-1:0] commit_set;
+
+// forwarded values
+wire [2:0]              f_membership_count;
+wire [2:0]              f_quorum;
+
+wire [P_NODE_COUNT-1:0] f_row_valid;
+wire [P_NODE_COUNT-1:0] f_row_matches; // which nodes' proposals match the commit set
+wire [2:0]              f_witness_count;
+wire                    f_agreed_row_valid;
+wire [P_NODE_COUNT-1:0] f_derived_sound_set;
+wire [P_NODE_COUNT-1:0] f_commit_set;
 
 reg last_slot_pulse;
 wire round_boundary;
 reg [1:0] eval_counter;
 reg activation_pending;
-
-wire [P_NODE_COUNT-1:0] row_matches; // which nodes' proposals match the commit set
-wire [2:0] witness_count;
-wire agreed_row_valid;
-
-wire [P_NODE_COUNT-1:0] proprosal_present;
-
-wire [2:0]                      membership_count;
-wire [2:0]                      quorum;
 
 wire halt;
 
@@ -355,14 +327,17 @@ always @(posedge clk, negedge rst_n) begin
                     s_evidence_round_id <= s_curr_round_id;
                     s_evidence_installed_membership <= s_curr_installed_membership;
                     s_evidence_membership_epoch <= s_curr_membership_epoch;
-                    s_evidence_sound_bitmap <= s_curr_sound_bitmap;
+                    s_evidence_sound_bitmap <= f_derived_sound_set;
                     for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                         s_evidence_proposals[i] <= s_curr_proposals[i];
                     end
-                    s_evidence_sound_matrix[P_NODE_ID] <= (derived_sound_set == 0) ? r_current_sound_set : derived_sound_set; // if no agreement, use what I see as sound, otherwise use agreed sound set as evidence 
+                    for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
+                        if (i != P_NODE_ID) s_evidence_sound_matrix[i] <= 0;
+                    end
+                    s_evidence_sound_matrix[P_NODE_ID] <= (f_derived_sound_set == 0) ? r_current_sound_set : f_derived_sound_set; // if no agreement, use what I see as sound, otherwise use agreed sound set as evidence 
 
                     s_curr_round_id <= s_curr_round_id + 1; // move to next round
-                    s_curr_installed_membership <= (derived_sound_set == 0) ? r_current_sound_set : derived_sound_set; // if no agreement, use what I see as sound, otherwise use agreed sound set as membership for next round
+                    s_curr_installed_membership <= (f_derived_sound_set == 0) ? r_current_sound_set : f_derived_sound_set; // if no agreement, use what I see as sound, otherwise use agreed sound set as membership for next round
                     s_curr_sound_bitmap <= 1 << P_NODE_ID; // reset sound bitmap to only self for next round
                     s_curr_proposals[P_NODE_ID] <= i_ctrl_host_payload; // reset proposals to host payload for next round
                     for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
@@ -435,8 +410,6 @@ end
 assign membership_count = count_ones(s_commit_installed_membership);
 assign quorum = (membership_count >> 1) + 1;
 
-wire [P_NODE_COUNT-1:0] row_valid;
-
 genvar k;
 generate
     for (k = 0; k < P_NODE_COUNT; k = k + 1) begin
@@ -447,19 +420,43 @@ endgenerate
 genvar m;
 generate
     for (m = 0; m < P_NODE_COUNT; m = m + 1) begin
-        assign row_matches[m] = (s_commit_installed_membership[m] && (s_commit_sound_matrix[m] == s_commit_sound_bitmap));
+        assign row_matches[m] = (s_commit_installed_membership[m] && (s_commit_sound_matrix[m] == s_commit_sound_matrix[P_NODE_ID]));
     end
 endgenerate
 
 assign witness_count = count_ones(row_matches);
-assign agreed_row_valid = (count_ones(row_valid) == membership_count) && (s_commit_sound_bitmap != 0) && (witness_count >= quorum); // s_commit_sound_bitmap is for some reason not a value when inputted
+assign agreed_row_valid = (count_ones(row_valid) == membership_count) && (s_commit_sound_matrix[P_NODE_ID] != 0) && (witness_count >= quorum);
 
 assign derived_sound_set = agreed_row_valid ? row_matches : {P_NODE_COUNT{1'b0}};
 
-assign commit_set = agreed_row_valid ? (s_commit_sound_bitmap) : {P_NODE_COUNT{1'b0}};
+assign commit_set = agreed_row_valid ? (s_commit_sound_matrix[P_NODE_ID]) : {P_NODE_COUNT{1'b0}};
 
 assign halt = (!agreed_row_valid) || (!(|commit_set)) || (!derived_sound_set[P_NODE_ID]) || ((derived_sound_set & r_current_sound_set) != derived_sound_set);
 
 assign o_tx_knowledge_vec = (agreed_row_valid && eval_counter >= 2) ? derived_sound_set : {P_NODE_COUNT{1'b0}};
+
+// forwarded values
+assign f_membership_count = count_ones(s_evidence_installed_membership);
+assign f_quorum = (f_membership_count >> 1) + 1;
+
+genvar n;
+generate
+    for (n = 0; n < P_NODE_COUNT; n = n + 1) begin
+        assign f_row_valid[n] = s_evidence_installed_membership[n] && ((s_evidence_sound_matrix[n] == 0) || (s_evidence_sound_matrix[n][n]));
+    end
+endgenerate
+
+genvar p;
+generate
+    for (p = 0; p < P_NODE_COUNT; p = p + 1) begin
+        assign f_row_matches[p] = (s_evidence_installed_membership[p] && (s_evidence_sound_matrix[p] == s_evidence_sound_matrix[P_NODE_ID]));
+    end
+endgenerate
+
+assign f_witness_count = count_ones(f_row_matches);
+assign f_agreed_row_valid = (count_ones(f_row_valid) == f_membership_count) && (s_evidence_sound_matrix[P_NODE_ID] != 0) && (f_witness_count >= f_quorum);
+
+assign f_derived_sound_set = f_agreed_row_valid ? f_row_matches : {P_NODE_COUNT{1'b0}};
+assign f_commit_set = f_agreed_row_valid ? (s_evidence_sound_matrix[P_NODE_ID]) : {P_NODE_COUNT{1'b0}};
 
 endmodule
