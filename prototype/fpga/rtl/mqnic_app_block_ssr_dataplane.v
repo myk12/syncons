@@ -332,7 +332,7 @@ module mqnic_app_block #
     input  wire                                           ptp_pps,
     input  wire                                           ptp_pps_str,
     input  wire                                           ptp_sync_locked,
-    input  wire [PTP_TS_WIDTH-1:0]                        ptp_sync_ts_rel,
+    input  wire [PTP_TS_WIDTH-1:0]                        ptp_sync_ts_rel, // used in simulation
     input  wire                                           ptp_sync_ts_rel_step,
     input  wire [PTP_TS_WIDTH-1:0]                        ptp_sync_ts_tod, // important for round boundaries
     input  wire                                           ptp_sync_ts_tod_step,
