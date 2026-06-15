@@ -101,13 +101,13 @@ module proposal_queue #
     input  wire                                     s_axis_dma_read_desc_status_valid,
 
     // DMA RAM write interface
-    input  wire [RAM_SEG_COUNT*RAM_SEL_WIDTH-1:0]           proposal_dma_ram_wr_cmd_sel,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        proposal_dma_ram_wr_cmd_be,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]      proposal_dma_ram_wr_cmd_addr,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      proposal_dma_ram_wr_cmd_data,
-    input  wire [RAM_SEG_COUNT-1:0]                         proposal_dma_ram_wr_cmd_valid,
-    output wire [RAM_SEG_COUNT-1:0]                         proposal_dma_ram_wr_cmd_ready,
-    output wire [RAM_SEG_COUNT-1:0]                         proposal_dma_ram_wr_done
+    input  wire [RAM_SEG_COUNT*RAM_SEL_WIDTH-1:0]           dma_ram_wr_cmd_sel,
+    input  wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        dma_ram_wr_cmd_be,
+    input  wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]      dma_ram_wr_cmd_addr,
+    input  wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      dma_ram_wr_cmd_data,
+    input  wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_cmd_valid,
+    output wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_cmd_ready,
+    output wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_done
 );
 
 localparam integer RBB = RB_BASE_ADDR;
@@ -155,6 +155,23 @@ end
 // -------------------------------------------------------------------------
 //                  Register for Output Control and Status
 // -------------------------------------------------------------------------
+// Register Map:
+// - 0x000: PROPOSAL_QUEUE_MAGIC [0x70717565/pque]  - Magic value to identify the proposal queue
+// - 0x004: PROPOSAL_QUEUE_VERSION [0x00010000/1.0] - Version number of the proposal queue implementation (not implemented in this example, always returns 1.0)
+// - 0x008: PROPOSAL_QUEUE_FEATURES [0x00000001]    - Bitfield of supported features (not implemented in this example, always returns 1 to indicate basic functionality)
+// - 0x00C: PROPOSAL_QUEUE_CTRL                     - Control register for the proposal queue (not implemented in this example, reserved for future use)
+// - 0x010: PROPOSAL_QUEUE_STATUS                   - Status register for the proposal queue (not implemented in this example, reserved for future
+// - 0x014: PROPOSAL_QUEUE_SCRATCH                  - Scratch register for testing read/write access (not implemented in this example, always returns 0)
+// - 0x018: PROPOSAL_QUEUE_PROPOSAL_ENTRY_COUNTER       - Counter for the number of proposal entries processed (not implemented in this example, increments on each DMA status update)
+// 
+// DMA Descriptor Registers:
+// - 0x104: PROPOSAL_QUEUE_DMA_DESC_ADDR_LO          - Lower 32 bits of DMA address for read descriptor
+// - 0x108: PROPOSAL_QUEUE_DMA_DESC_ADDR_HI          - Upper 32 bits of DMA address for read descriptor
+// - 0x10C: PROPOSAL_QUEUE_DMA_DESC_LEN              - Length of the DMA transfer in bytes
+// - 0x110: PROPOSAL_QUEUE_DMA_DESC_TAG              - RAM tag for the DMA transfer
+// - 0x114: PROPOSAL_QUEUE_DMA_DESC_STATUS_TAG       - Tag from the last DMA read status
+// - 0x118: PROPOSAL_QUEUE_DMA_DESC_STATUS_ERROR     - Error code from the
+
 reg reg_wr_ack_reg = 1'b0, reg_wr_ack_next;
 reg reg_rd_ack_reg = 1'b0, reg_rd_ack_next;
 reg [REG_DATA_WIDTH-1:0] reg_rd_data_reg = {REG_DATA_WIDTH{1'b0}}, reg_rd_data_next;
@@ -169,6 +186,7 @@ reg [DMA_TAG_WIDTH-1:0]     dma_read_desc_status_tag_reg    = 0, dma_read_desc_s
 reg [3:0]                   dma_read_desc_status_error_reg  = 0, dma_read_desc_status_error_next;
 reg                         dma_read_desc_status_valid_reg  = 0, dma_read_desc_status_valid_next;
 
+reg [REG_DATA_WIDTH-1:0]    scratch_reg = 0; // scratch register for testing read/write access
 reg [REG_DATA_WIDTH-1:0]    proposal_entry_counter_reg = 0, proposal_entry_counter_next;
 
 // -------------------------------------------------------------------------
@@ -191,16 +209,16 @@ assign m_axis_dma_read_desc_valid       = dma_read_desc_valid_reg;
 // -------------------------------------------------------------------------
 //              Internal proposal RAM read interface
 // -------------------------------------------------------------------------
-wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0] proposal_ram_rd_cmd_addr;
-wire [RAM_SEG_COUNT-1:0]                    proposal_ram_rd_cmd_valid;
-wire [RAM_SEG_COUNT-1:0]                    proposal_ram_rd_cmd_ready;
-wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0] proposal_ram_rd_resp_data;
-wire [RAM_SEG_COUNT-1:0]                    proposal_ram_rd_resp_valid;
-wire [RAM_SEG_COUNT-1:0]                    proposal_ram_rd_resp_ready;
+wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0] dma_ram_rd_cmd_addr;
+wire [RAM_SEG_COUNT-1:0]                    dma_ram_rd_cmd_valid;
+wire [RAM_SEG_COUNT-1:0]                    dma_ram_rd_cmd_ready;
+wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0] dma_ram_rd_resp_data;
+wire [RAM_SEG_COUNT-1:0]                    dma_ram_rd_resp_valid;
+wire [RAM_SEG_COUNT-1:0]                    dma_ram_rd_resp_ready;
 
-assign proposal_ram_rd_cmd_addr = 0; // always read from address 0 for proposal RAM
-assign proposal_ram_rd_cmd_valid = 0;
-assign proposal_ram_rd_resp_ready = {RAM_SEG_COUNT{1'b1}};
+assign dma_ram_rd_cmd_addr = 0; // always read from address 0 for proposal RAM
+assign dma_ram_rd_cmd_valid = 0;
+assign dma_ram_rd_resp_ready = {RAM_SEG_COUNT{1'b1}};
 
 // -------------------------------------------------------------------------
 //                  Next-state logic
@@ -228,11 +246,21 @@ always @* begin
     if (reg_wr_en && !reg_wr_ack_reg) begin
         // write operation
         reg_wr_ack_next = 1'b1; // acknowledge the write
-        case ({reg_wr_addr >> 2, 2'b00}) // align address to 4 bytes
-            RBB + 12'h000: dma_read_desc_dma_addr_next[31:0] = reg_wr_data;
-            RBB + 12'h004: dma_read_desc_dma_addr_next[63:32] = reg_wr_data;
-            RBB + 12'h008: dma_read_desc_len_next = reg_wr_data[DMA_LEN_WIDTH-1:0];
-            RBB + 12'h00c: begin
+        case ({reg_wr_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
+            // Header registers (read-only)
+            RBB + 12'h000: ; // PROPOSAL_QUEUE_MAGIC is read-only
+            RBB + 12'h004: ; // PROPOSAL_QUEUE_VERSION is read-only
+            RBB + 12'h008: ; // PROPOSAL_QUEUE_FEATURES is read-only
+            RBB + 12'h00C: ; // PROPOSAL_QUEUE_CTRL is reserved for future use
+            RBB + 12'h010: ; // PROPOSAL_QUEUE_STATUS is reserved for future use
+            RBB + 12'h014: scratch_reg <= reg_wr_data; // Write to scratch register for testing
+            RBB + 12'h018: ; // PROPOSAL_QUEUE_PROPOSAL_ENTRY_COUNTER is read-only
+
+            // DMA descriptor registers
+            RBB + 12'h104: dma_read_desc_dma_addr_next[31:0] = reg_wr_data;
+            RBB + 12'h108: dma_read_desc_dma_addr_next[63:32] = reg_wr_data;
+            RBB + 12'h10C: dma_read_desc_len_next = reg_wr_data[DMA_LEN_WIDTH-1:0];
+            RBB + 12'h110: begin
                 dma_read_desc_tag_next = reg_wr_data[DMA_TAG_WIDTH-1:0];
                 dma_read_desc_valid_next = 1'b1;
                 dma_read_desc_ram_addr_next = {RAM_ADDR_WIDTH{1'b0}}; // always start at 0 for proposal RAM
@@ -241,6 +269,8 @@ always @* begin
                 dma_read_desc_status_error_next = 4'b0000;
                 dma_read_desc_status_valid_next = 1'b0;
             end
+            RBB + 12'h114: ; // PROPOSAL_QUEUE_DMA_DESC_STATUS_TAG is read-only
+            RBB + 12'h118: ; // PROPOSAL_QUEUE_DMA_DESC_STATUS_ERROR is read-only
             default: begin
                 reg_wr_ack_next = 1'b0;
             end
@@ -250,15 +280,25 @@ always @* begin
     if (reg_rd_en && !reg_rd_ack_reg) begin
         // read operation - decode address and return data
         reg_rd_ack_next = 1'b1; // acknowledge the read
-        case ({reg_rd_addr >> 2, 2'b00}) // align address to 4 bytes
-            RBB + 12'h000: reg_rd_data_next = dma_read_desc_dma_addr_reg[31:0];
-            RBB + 12'h004: reg_rd_data_next = dma_read_desc_dma_addr_reg[63:32];
-            RBB + 12'h008: reg_rd_data_next = dma_read_desc_len_reg;
-            RBB + 12'h00c: reg_rd_data_next = {12'b0, dma_read_desc_tag_reg};
-            RBB + 12'h010: reg_rd_data_next = proposal_entry_counter_reg;
+        case ({reg_rd_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
+            RBB + 12'h000: reg_rd_data_next = 32'h70726f71; // "proq"
+            RBB + 12'h004: reg_rd_data_next = 32'h00000100; // version 1.0
+            RBB + 12'h008: reg_rd_data_next = 32'h00000001; // features (bit 0: basic functionality)
+            RBB + 12'h00C: reg_rd_data_next = 32'h00000000; // control register (reserved, returns 0)
+            RBB + 12'h010: reg_rd_data_next = 32'h00000000; // status register (reserved, returns 0)
+            RBB + 12'h014: reg_rd_data_next = scratch_reg; // read from scratch register for testing
+            RBB + 12'h018: reg_rd_data_next = proposal_entry_counter_reg; // read from proposal entry counter
+
+            // DMA descriptor registers
+            RBB + 12'h104: reg_rd_data_next = dma_read_desc_dma_addr_reg[31:0];
+            RBB + 12'h108: reg_rd_data_next = dma_read_desc_dma_addr_reg[63:32];
+            RBB + 12'h10C: reg_rd_data_next = dma_read_desc_len_reg;
+            RBB + 12'h110: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_TAG_WIDTH){1'b0}}, dma_read_desc_tag_reg};
+            RBB + 12'h114: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_TAG_WIDTH){1'b0}}, dma_read_desc_status_tag_reg};
+            RBB + 12'h118: reg_rd_data_next = {{(REG_DATA_WIDTH - 4){1'b0}}, dma_read_desc_status_error_reg};
             default: begin
-                reg_rd_data_next = {REG_DATA_WIDTH{1'b0}};
                 reg_rd_ack_next = 1'b0;
+                reg_rd_data_next = {REG_DATA_WIDTH{1'b0}};
             end
         endcase
     end
@@ -295,6 +335,8 @@ always @(posedge clk) begin
 
     proposal_entry_counter_reg <= proposal_entry_counter_next;
 
+    scratch_reg <= scratch_reg; // hold the value of the scratch register
+
     if (rst) begin
         reg_wr_ack_reg <= 1'b0;
         reg_rd_ack_reg <= 1'b0;
@@ -311,6 +353,7 @@ always @(posedge clk) begin
         dma_read_desc_status_valid_reg <= 1'b0;
 
         proposal_entry_counter_reg <= {REG_DATA_WIDTH{1'b0}};
+        scratch_reg <= {REG_DATA_WIDTH{1'b0}};
     end
 end
 
@@ -334,23 +377,23 @@ proposal_ram_inst (
      * Write port:
      * DMA read data from host lands here.
      */
-    .wr_cmd_be(proposal_dma_ram_wr_cmd_be),
-    .wr_cmd_addr(proposal_dma_ram_wr_cmd_addr),
-    .wr_cmd_data(proposal_dma_ram_wr_cmd_data),
-    .wr_cmd_valid(proposal_dma_ram_wr_cmd_valid),
-    .wr_cmd_ready(proposal_dma_ram_wr_cmd_ready),
-    .wr_done(proposal_dma_ram_wr_done),
+    .wr_cmd_be(dma_ram_wr_cmd_be),
+    .wr_cmd_addr(dma_ram_wr_cmd_addr),
+    .wr_cmd_data(dma_ram_wr_cmd_data),
+    .wr_cmd_valid(dma_ram_wr_cmd_valid),
+    .wr_cmd_ready(dma_ram_wr_cmd_ready),
+    .wr_done(dma_ram_wr_done),
 
     /*
      * Read port:
      * internal proposal reader -> ssr_core
      */
-    .rd_cmd_addr(proposal_ram_rd_cmd_addr),
-    .rd_cmd_valid(proposal_ram_rd_cmd_valid),
-    .rd_cmd_ready(proposal_ram_rd_cmd_ready),
-    .rd_resp_data(proposal_ram_rd_resp_data),
-    .rd_resp_valid(proposal_ram_rd_resp_valid),
-    .rd_resp_ready(proposal_ram_rd_resp_ready)
+    .rd_cmd_addr(dma_ram_rd_cmd_addr),
+    .rd_cmd_valid(dma_ram_rd_cmd_valid),
+    .rd_cmd_ready(dma_ram_rd_cmd_ready),
+    .rd_resp_data(dma_ram_rd_resp_data),
+    .rd_resp_valid(dma_ram_rd_resp_valid),
+    .rd_resp_ready(dma_ram_rd_resp_ready)
 );
 
 endmodule

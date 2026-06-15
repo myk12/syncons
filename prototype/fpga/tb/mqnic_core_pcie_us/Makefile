@@ -59,6 +59,7 @@ VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/common/rtl/tx_scheduler_rr.v
 VERILOG_SOURCES += ../../rtl/mqnic_app_block_ssr_dataplane.v
 VERILOG_SOURCES += ../../rtl/ssr_dataplane.v
 VERILOG_SOURCES += ../../rtl/proposal_queue.v
+VERILOG_SOURCES += ../../rtl/commit_queue.v
 # Ethernet sources
 VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/lib/eth/rtl/mac_ctrl_rx.v
 VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/lib/eth/rtl/mac_ctrl_tx.v

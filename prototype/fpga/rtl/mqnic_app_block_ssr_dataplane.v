@@ -663,30 +663,6 @@ assign ctrl_dma_ram_rd_resp_data = 0;
 assign ctrl_dma_ram_rd_resp_valid = ctrl_dma_ram_rd_cmd_valid;
 
 /*
- * DMA interface (data)
- */
-//assign m_axis_data_dma_read_desc_dma_addr = 0;
-//assign m_axis_data_dma_read_desc_ram_sel = 0;
-//assign m_axis_data_dma_read_desc_ram_addr = 0;
-//assign m_axis_data_dma_read_desc_len = 0;
-//assign m_axis_data_dma_read_desc_tag = 0;
-//assign m_axis_data_dma_read_desc_valid = 1'b0;
-assign m_axis_data_dma_write_desc_dma_addr = 0;
-assign m_axis_data_dma_write_desc_ram_sel = 0;
-assign m_axis_data_dma_write_desc_ram_addr = 0;
-assign m_axis_data_dma_write_desc_imm = 0;
-assign m_axis_data_dma_write_desc_imm_en = 0;
-assign m_axis_data_dma_write_desc_len = 0;
-assign m_axis_data_dma_write_desc_tag = 0;
-assign m_axis_data_dma_write_desc_valid = 1'b0;
-
-//assign data_dma_ram_wr_cmd_ready = 1'b1;
-//assign data_dma_ram_wr_done = data_dma_ram_wr_cmd_valid;
-//assign data_dma_ram_rd_cmd_ready = ctrl_dma_ram_rd_resp_ready;
-//assign data_dma_ram_rd_resp_data = 0;
-//assign data_dma_ram_rd_resp_valid = data_dma_ram_rd_cmd_valid;
-
-/*
  * Ethernet (direct MAC interface - lowest latency raw traffic)
  */
 assign m_axis_direct_tx_tdata = s_axis_direct_tx_tdata;
@@ -730,31 +706,6 @@ assign s_axis_sync_rx_tready = m_axis_sync_rx_tready;
 assign m_axis_sync_rx_tlast = s_axis_sync_rx_tlast;
 assign m_axis_sync_rx_tuser = s_axis_sync_rx_tuser;
 
-/*
- * Ethernet (internal at interface module)
- */
-assign m_axis_if_tx_tdata = s_axis_if_tx_tdata;
-assign m_axis_if_tx_tkeep = s_axis_if_tx_tkeep;
-assign m_axis_if_tx_tvalid = s_axis_if_tx_tvalid;
-assign s_axis_if_tx_tready = m_axis_if_tx_tready;
-assign m_axis_if_tx_tlast = s_axis_if_tx_tlast;
-assign m_axis_if_tx_tid = s_axis_if_tx_tid;
-assign m_axis_if_tx_tdest = s_axis_if_tx_tdest;
-assign m_axis_if_tx_tuser = s_axis_if_tx_tuser;
-
-assign m_axis_if_tx_cpl_ts = s_axis_if_tx_cpl_ts;
-assign m_axis_if_tx_cpl_tag = s_axis_if_tx_cpl_tag;
-assign m_axis_if_tx_cpl_valid = s_axis_if_tx_cpl_valid;
-assign s_axis_if_tx_cpl_ready = m_axis_if_tx_cpl_ready;
-
-assign m_axis_if_rx_tdata = s_axis_if_rx_tdata;
-assign m_axis_if_rx_tkeep = s_axis_if_rx_tkeep;
-assign m_axis_if_rx_tvalid = s_axis_if_rx_tvalid;
-assign s_axis_if_rx_tready = m_axis_if_rx_tready;
-assign m_axis_if_rx_tlast = s_axis_if_rx_tlast;
-assign m_axis_if_rx_tid = s_axis_if_rx_tid;
-assign m_axis_if_rx_tdest = s_axis_if_rx_tdest;
-assign m_axis_if_rx_tuser = s_axis_if_rx_tuser;
 
 /*
  * DDR
@@ -908,6 +859,27 @@ ssr_dataplane #(
     // SSR configuration parameters
     .MAX_REPLICAS(7),
 
+    // interface parameters
+    .IF_COUNT(IF_COUNT),
+    .PORTS_PER_IF(PORTS_PER_IF),
+    .SCHED_PER_IF(SCHED_PER_IF),
+    .PORT_COUNT(PORT_COUNT),
+
+    // PTP configuration parameters
+    .PTP_CLK_PERIOD_NS_NUM(PTP_CLK_PERIOD_NS_NUM),
+    .PTP_CLK_PERIOD_NS_DENOM(PTP_CLK_PERIOD_NS_DENOM),
+    .PTP_PORT_CDC_PIPELINE(PTP_PORT_CDC_PIPELINE),
+    .PTP_PEROUT_ENABLE(PTP_PEROUT_ENABLE),
+    .PTP_PEROUT_COUNT(PTP_PEROUT_COUNT),
+
+    // interface configuration
+    .PTP_TS_ENABLE(PTP_TS_ENABLE),
+    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD),
+    .PTP_TS_WIDTH(PTP_TS_WIDTH),
+    .TX_TAG_WIDTH(TX_TAG_WIDTH),
+    .MAX_TX_SIZE(MAX_TX_SIZE),
+    .MAX_RX_SIZE(MAX_RX_SIZE),
+
     // DMA interface parameters
     .DMA_ADDR_WIDTH(DMA_ADDR_WIDTH),
     .DMA_IMM_ENABLE(DMA_IMM_ENABLE),
@@ -920,7 +892,17 @@ ssr_dataplane #(
     .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
     .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
     .RAM_SEG_ADDR_WIDTH(RAM_SEG_ADDR_WIDTH),
-    .RAM_PIPELINE(RAM_PIPELINE)
+    .RAM_PIPELINE(RAM_PIPELINE),
+
+    // Ethernet interface parameters
+    .AXIS_IF_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
+    .AXIS_IF_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
+    .AXIS_IF_TX_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
+    .AXIS_IF_RX_ID_WIDTH(AXIS_IF_RX_ID_WIDTH),
+    .AXIS_IF_TX_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH),
+    .AXIS_IF_RX_DEST_WIDTH(AXIS_IF_RX_DEST_WIDTH),
+    .AXIS_IF_TX_USER_WIDTH(AXIS_IF_TX_USER_WIDTH),
+    .AXIS_IF_RX_USER_WIDTH(AXIS_IF_RX_USER_WIDTH) 
 ) ssr_dataplane_inst (
     .clk(clk),
     .rst(rst),
@@ -952,6 +934,22 @@ ssr_dataplane #(
     .s_axis_data_dma_read_desc_status_error(s_axis_data_dma_read_desc_status_error),
     .s_axis_data_dma_read_desc_status_valid(s_axis_data_dma_read_desc_status_valid),
 
+    // DMA write descriptor output
+    .m_axis_data_dma_write_desc_dma_addr(m_axis_data_dma_write_desc_dma_addr),
+    .m_axis_data_dma_write_desc_ram_sel(m_axis_data_dma_write_desc_ram_sel),
+    .m_axis_data_dma_write_desc_ram_addr(m_axis_data_dma_write_desc_ram_addr),
+    .m_axis_data_dma_write_desc_imm(m_axis_data_dma_write_desc_imm),
+    .m_axis_data_dma_write_desc_imm_en(m_axis_data_dma_write_desc_imm_en),
+    .m_axis_data_dma_write_desc_len(m_axis_data_dma_write_desc_len),
+    .m_axis_data_dma_write_desc_tag(m_axis_data_dma_write_desc_tag),
+    .m_axis_data_dma_write_desc_valid(m_axis_data_dma_write_desc_valid),
+    .m_axis_data_dma_write_desc_ready(m_axis_data_dma_write_desc_ready),
+
+    // DMA write descriptor status input
+    .s_axis_data_dma_write_desc_status_tag(s_axis_data_dma_write_desc_status_tag),
+    .s_axis_data_dma_write_desc_status_error(s_axis_data_dma_write_desc_status_error),
+    .s_axis_data_dma_write_desc_status_valid(s_axis_data_dma_write_desc_status_valid),
+
     // DMA RAM interface (data)
     .data_dma_ram_wr_cmd_sel(data_dma_ram_wr_cmd_sel),
     .data_dma_ram_wr_cmd_be(data_dma_ram_wr_cmd_be),
@@ -967,7 +965,72 @@ ssr_dataplane #(
     .data_dma_ram_rd_cmd_ready(data_dma_ram_rd_cmd_ready),
     .data_dma_ram_rd_resp_data(data_dma_ram_rd_resp_data),
     .data_dma_ram_rd_resp_valid(data_dma_ram_rd_resp_valid),
-    .data_dma_ram_rd_resp_ready(data_dma_ram_rd_resp_ready)
+    .data_dma_ram_rd_resp_ready(data_dma_ram_rd_resp_ready),
+
+    // PTP
+    .ptp_clk(ptp_clk),
+    .ptp_rst(ptp_rst),
+    .ptp_sample_clk(ptp_sample_clk),
+    .ptp_td_sd(ptp_td_sd),
+    .ptp_pps(ptp_pps),
+    .ptp_pps_str(ptp_pps_str),
+    .ptp_sync_locked(ptp_sync_locked),
+    .ptp_sync_ts_rel(ptp_sync_ts_rel),
+    .ptp_sync_ts_rel_step(ptp_sync_ts_rel_step),
+    .ptp_sync_ts_tod(ptp_sync_ts_tod),
+    .ptp_sync_ts_tod_step(ptp_sync_ts_tod_step),
+    .ptp_sync_pps(ptp_sync_pps),
+    .ptp_sync_pps_str(ptp_sync_pps_str),
+    .ptp_perout_locked(ptp_perout_locked),
+    .ptp_perout_error(ptp_perout_error),
+    .ptp_perout_pulse(ptp_perout_pulse),
+
+    // Ethernet
+    .s_axis_if_tx_tdata(s_axis_if_tx_tdata),
+    .s_axis_if_tx_tkeep(s_axis_if_tx_tkeep),
+    .s_axis_if_tx_tvalid(s_axis_if_tx_tvalid),
+    .s_axis_if_tx_tready(s_axis_if_tx_tready),
+    .s_axis_if_tx_tlast(s_axis_if_tx_tlast),
+    .s_axis_if_tx_tid(s_axis_if_tx_tid),
+    .s_axis_if_tx_tdest(s_axis_if_tx_tdest),
+    .s_axis_if_tx_tuser(s_axis_if_tx_tuser),
+
+    .m_axis_if_tx_tdata(m_axis_if_tx_tdata),
+    .m_axis_if_tx_tkeep(m_axis_if_tx_tkeep),
+    .m_axis_if_tx_tvalid(m_axis_if_tx_tvalid),
+    .m_axis_if_tx_tready(m_axis_if_tx_tready),
+    .m_axis_if_tx_tlast(m_axis_if_tx_tlast),
+    .m_axis_if_tx_tid(m_axis_if_tx_tid),
+    .m_axis_if_tx_tdest(m_axis_if_tx_tdest),
+    .m_axis_if_tx_tuser(m_axis_if_tx_tuser),
+
+    .s_axis_if_tx_cpl_ts(s_axis_if_tx_cpl_ts),
+    .s_axis_if_tx_cpl_tag(s_axis_if_tx_cpl_tag),
+    .s_axis_if_tx_cpl_valid(s_axis_if_tx_cpl_valid),
+    .s_axis_if_tx_cpl_ready(s_axis_if_tx_cpl_ready),
+
+    .m_axis_if_tx_cpl_ts(m_axis_if_tx_cpl_ts),
+    .m_axis_if_tx_cpl_tag(m_axis_if_tx_cpl_tag),
+    .m_axis_if_tx_cpl_valid(m_axis_if_tx_cpl_valid),
+    .m_axis_if_tx_cpl_ready(m_axis_if_tx_cpl_ready),
+
+    .s_axis_if_rx_tdata(s_axis_if_rx_tdata),
+    .s_axis_if_rx_tkeep(s_axis_if_rx_tkeep),
+    .s_axis_if_rx_tvalid(s_axis_if_rx_tvalid),
+    .s_axis_if_rx_tready(s_axis_if_rx_tready),
+    .s_axis_if_rx_tlast(s_axis_if_rx_tlast),
+    .s_axis_if_rx_tid(s_axis_if_rx_tid),
+    .s_axis_if_rx_tdest(s_axis_if_rx_tdest),
+    .s_axis_if_rx_tuser(s_axis_if_rx_tuser),
+
+    .m_axis_if_rx_tdata(m_axis_if_rx_tdata),
+    .m_axis_if_rx_tkeep(m_axis_if_rx_tkeep),
+    .m_axis_if_rx_tvalid(m_axis_if_rx_tvalid),
+    .m_axis_if_rx_tready(m_axis_if_rx_tready),
+    .m_axis_if_rx_tlast(m_axis_if_rx_tlast),
+    .m_axis_if_rx_tid(m_axis_if_rx_tid),
+    .m_axis_if_rx_tdest(m_axis_if_rx_tdest),
+    .m_axis_if_rx_tuser(m_axis_if_rx_tuser)
 );
 
 endmodule

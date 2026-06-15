@@ -26,11 +26,13 @@ from cocotbext.pcie.xilinx.us import UltraScalePlusPcieDevice
 
 try:
     import mqnic
+    import ssr_dataplane as ssr
 except ImportError:
     # attempt import from current directory
     sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
     try:
         import mqnic
+        import ssr_dataplane as ssr
     finally:
         del sys.path[0]
 
@@ -733,15 +735,12 @@ async def run_test_ssr_dataplane(dut):
     tb.log.info("Init complete")
 
     tb.log.info("TEST SSR Application")
-    SSR_RB_TYPE     = 0x53535201
-    SSR_RB_VERSION  = 0x00000100
-    SSR_RB_FEATURES = 0x0000000f
 
     app_reg_blocks = mqnic.RegBlockList()
     await app_reg_blocks.enumerate_reg_blocks(tb.driver.app_hw_regs)
 
     tb.log.info("Found %d application register blocks", len(app_reg_blocks))
-    ssr_rb = app_reg_blocks.find(SSR_RB_TYPE, SSR_RB_VERSION)
+    ssr_rb = app_reg_blocks.find(ssr.SSR_RB_TYPE, ssr.SSR_RB_VERSION)
     assert ssr_rb is not None, "SSR register block not found"
 
     # ----------------------------------------------------------------------
@@ -749,29 +748,29 @@ async def run_test_ssr_dataplane(dut):
     # ----------------------------------------------------------------------   
     # check SSR register block
     tb.log.info("Check SSR register block")
-    assert await ssr_rb.read_dword(0x00) == SSR_RB_TYPE, "Invalid SSR register block type"
-    assert await ssr_rb.read_dword(0x04) == SSR_RB_VERSION, "Invalid SSR register block version"
-    assert await ssr_rb.read_dword(0x0c) == SSR_RB_FEATURES, "Invalid SSR register block features"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_TYPE) == ssr.SSR_RB_TYPE, "Invalid SSR register block type"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_VERSION) == ssr.SSR_RB_VERSION, "Invalid SSR register block version"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_FEATURES) == ssr.SSR_RB_FEATURES, "Invalid SSR register block features"
 
     # test scratch register
     tb.log.info("Test SSR scratch register")
-    await ssr_rb.write_dword(0x1c, 0x12345678)
-    assert await ssr_rb.read_dword(0x1c) == 0x12345678, "SSR scratch register read/write failed"
+    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_SCRATCH, 0x12345678)
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_SCRATCH) == 0x12345678, "SSR scratch register read/write failed"
 
     # test replica configuration register
     tb.log.info("Test SSR replica configuration register")
-    await ssr_rb.write_dword(0x020, 0x00000001)     # replica_id
-    await ssr_rb.write_dword(0x024, 0x00000003)     # replica_num
-    await ssr_rb.write_dword(0x028, 0x00000800)     # round_length_ns
-    await ssr_rb.write_dword(0x02c, 0x00000177)     # ethernet_type
+    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_ID, 0x00000001)     # replica_id
+    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_NUM, 0x00000003)     # replica_num
+    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ROUND_LEN_NS, 0x00000800)     # round_length_ns
+    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ETH_TYPE, 0x00000177)     # ethernet_type
 
-    status = await ssr_rb.read_dword(0x014)
+    status = await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_STATUS)
     assert status & 0x1 == 1, "SSR application should be inactive"
 
-    assert await ssr_rb.read_dword(0x020) == 1, "SSR replica_id register read/write failed"
-    assert await ssr_rb.read_dword(0x024) == 3, "SSR replica_num register read/write failed"
-    assert await ssr_rb.read_dword(0x028) == 0x800, "SSR round_length_ns register read/write failed"
-    assert await ssr_rb.read_dword(0x02c) == 0x177, "SSR ethernet_type register read/write failed"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_ID) == 1, "SSR replica_id register read/write failed"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_NUM) == 3, "SSR replica_num register read/write failed"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ROUND_LEN_NS) == 0x800, "SSR round_length_ns register read/write failed"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ETH_TYPE) == 0x177, "SSR ethernet_type register read/write failed"
 
     # test MAC address registers
     tb.log.info("Test SSR MAC address registers")
@@ -782,38 +781,73 @@ async def run_test_ssr_dataplane(dut):
     ]
     for i, mac in enumerate(mac_addrs):
         mac_int = (mac[0] << 40) | (mac[1] << 32) | (mac[2] << 24) | (mac[3] << 16) | (mac[4] << 8) | mac[5]
-        await ssr_rb.write_dword(0x100 + i*8, mac_int & 0xffffffff)
-        await ssr_rb.write_dword(0x100 + i*8 + 4, (mac_int >> 32) & 0xffff)
+        await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_LO + i*8, mac_int & 0xffffffff)
+        await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_HI + i*8, (mac_int >> 32) & 0xffff)
 
     for i, mac in enumerate(mac_addrs):
         mac_int = (mac[0] << 40) | (mac[1] << 32) | (mac[2] << 24) | (mac[3] << 16) | (mac[4] << 8) | mac[5]
-        mac_int_rd = (await ssr_rb.read_dword(0x100 + i*8)) | ((await ssr_rb.read_dword(0x100 + i*8 + 4)) << 32)
+        mac_int_rd = (await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_LO + i*8)) | ((await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_HI + i*8)) << 32)
         assert mac_int_rd == mac_int, "SSR MAC address register read/write failed"
 
     # ----------------------------------------------------------------------
-    #           SSR application DMA read test
+    #           SSR DMA proposal queue tests
     # ----------------------------------------------------------------------
     # allocate DMA buffer and fill with test data
-    tb.log.info("SSR application DMA read test")
+    tb.log.info("Test SSR DMA Proposal Queue")
+
+    # check if the register block matches the expected type and version
+    assert await ssr_rb.read_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_MAGIC) == ssr.PROPOSAL_QUEUE_MAGIC, "Invalid SSR Proposal Queue register block type"
+    assert await ssr_rb.read_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_VERSION) == ssr.PROPOSAL_QUEUE_VERSION, "Invalid SSR Proposal Queue register block version"
+
+    # allocate memory for DMA
     mem = tb.rc.mem_pool.alloc_region(16*1024*1024)
     mem_base = mem.get_absolute_address(0)
 
-    tb.log.info("Fill DMA buffer with test data")
     mem[0:1024] = bytearray([x % 256 for x in range(1024)])
 
     # write pcie read descriptor
     tb.log.info("Write SSR DMA read descriptor")
-    await ssr_rb.write_dword(0x1000, (mem_base+0x0000) & 0xffffffff)                # address low
-    await ssr_rb.write_dword(0x1004, (mem_base+0x0000 >> 32) & 0xffffffff)          # address high
-    await ssr_rb.write_dword(0x1008, 1024)                                      # length
-    await ssr_rb.write_dword(0x100c, 0x00000001)                                  # control (set start bit)
+    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_ADDR_LO, (mem_base+0x0000) & 0xffffffff)                # address low
+    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_ADDR_HI, (mem_base+0x0000 >> 32) & 0xffffffff)          # address high
+    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_LEN, 1024)                                      # length
+    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_TAG, 0x00000001)                                  # control (set start bit)
 
     tb.log.info("Start SSR DMA read")
     await Timer(2000, 'ns')
 
     # read status and check for completion
     tb.log.info("Read SSR DMA read status")
-    status = await ssr_rb.read_dword(0x1010)
+    status = await ssr_rb.read_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_PROPOSAL_ENTRY_COUNTER)
 
     tb.log.info("SSR DMA read status: 0x%08x", status)
+    assert status & 0x1 == 1, "SSR DMA read did not complete"
 
+    # ----------------------------------------------------------------------
+    #           SSR DMA commit queue tests
+    # ----------------------------------------------------------------------
+    tb.log.info("Test SSR DMA Commit Queue")
+
+    # check if the register block matches the expected type and version
+    assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_MAGIC) == ssr.COMMIT_QUEUE_MAGIC, "Invalid SSR Commit Queue register block type"
+    assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_VERSION) == ssr.COMMIT_QUEUE_VERSION, "Invalid SSR Commit Queue register block version"
+
+    # write pcie write descriptor
+    tb.log.info("Write SSR DMA write descriptor")
+    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_LO, (mem_base+0x1000) & 0xffffffff)                # address low
+    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_HI, (mem_base+0x1000 >> 32) & 0xffffffff)          # address high
+    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_LEN, 64)                                      # length
+    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_TAG, 0x00000001)                                  # control (set start bit)
+
+    await Timer(2000, 'ns')
+
+    # read status and check for completion
+    tb.log.info("Read SSR DMA write status")
+    status = await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_STATUS_TAG)
+    tb.log.info("SSR DMA write status: 0x%08x", status)
+    assert status == 0x00000001, "SSR DMA write did not complete successfully"
+
+    # dump the memory region to check the results
+    tb.log.info("Dump memory region after SSR DMA write:")
+    mem_dump = mem[0x1000:0x1000+64]
+    for i in range(0, len(mem_dump), 16):
+        tb.log.info("0x%04x: %s", i, ' '.join('%02x' % b for b in mem_dump[i:i+16]))
