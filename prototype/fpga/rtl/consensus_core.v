@@ -17,18 +17,21 @@ module consensus_core #(
     parameter P_LOG_ITEM_LEN = 8,   // in bytes
     parameter P_DATA_WIDTH = 512,
     parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8,
-    parameter P_MEMBERSHIP_EPOCH_WIDTH = 64 // will change
+    parameter P_MEMBERSHIP_EPOCH_WIDTH = 64, // will change
+    parameter P_SYS_CLOCK_FREQ_HZ = 250_000_000,  // 250 MHz
+    parameter P_SLOT_DURATION_NS = 4000,  // 4 microseconds
+    parameter P_GUARD_NS = 100,          // 100 nanoseconds
+    parameter PTP_TS_FMT_TOD = 1,
+    parameter PTP_TS_WIDTH = PTP_TS_FMT_TOD ? 96 : 64
 ) (
     // clock and reset
     input wire                                  clk,
     input wire                                  rst_n,
 
-    // timing control interface (from scheduler )
-    input wire [63:0]                           i_current_slot_id, // same as round_id
-    input wire                                  i_new_slot_pulse,
-    // input wire                                  i_commit_start_pulse,
-    // input wire                                  i_slot_end_pulse,
-
+    // scheduler signals
+    input wire                                  i_global_enable,
+    input wire [PTP_TS_WIDTH-1:0]               ptp_sync_ts,
+    
     // data interface
     input wire                                  i_rx_valid,
     input wire [7:0]                            i_rx_node_id,
@@ -51,12 +54,16 @@ module consensus_core #(
     output reg                                  o_system_halt,   // high when system halts
 
     // data output
-    output wire [P_NODE_COUNT-1:0]               o_tx_knowledge_vec,
+    output wire [P_NODE_COUNT-1:0]              o_tx_knowledge_vec,
     output wire [P_LOG_ITEM_LEN*8-1:0]          o_tx_propose,
 
     // application data output (committed logs)
-    output reg [P_LOG_ITEM_LEN*8*P_NODE_COUNT-1:0]      o_commit_log,
-    output reg [P_NODE_COUNT-1:0]                       o_commit_valid
+    output reg [P_LOG_ITEM_LEN*8*P_NODE_COUNT-1:0]  o_commit_log,
+    output reg [P_NODE_COUNT-1:0]                   o_commit_valid,
+
+    // transmit trigger
+    output reg                                  o_tx_allowed,         // allow transmission
+    output reg                                  o_rx_enabled          // enable receiving
 );
 
 // current stage
@@ -81,6 +88,21 @@ reg [P_MEMBERSHIP_EPOCH_WIDTH-1:0]  s_commit_membership_epoch;
 reg [P_NODE_COUNT-1:0]              s_commit_sound_bitmap;
 reg [P_LOG_ITEM_LEN*8-1:0]          s_commit_proposals [0:P_NODE_COUNT-1];
 reg [P_NODE_COUNT-1:0]              s_commit_sound_matrix [0:P_NODE_COUNT-1];
+
+// scheduler signals
+reg [63:0]  current_slot_id; // same as round_id
+reg         new_slot_pulse;
+
+reg [PTP_TS_WIDTH-1:0] i_ptp_start_time_ns;
+reg last_enable;
+
+wire enable_rising_edge = i_global_enable && !last_enable;
+
+reg [PTP_TS_WIDTH-1:0] r_next_boundary;
+reg [63:0] r_slot_id_counter;
+reg [PTP_TS_WIDTH-1:0] slot_offset;
+
+localparam P_TX_DONE        = P_GUARD_NS + P_NODE_ID * 200; // each node gets 200ns slot
 
 
 //------------------------------------------------
@@ -128,7 +150,6 @@ wire                    f_agreed_row_valid;
 wire [P_NODE_COUNT-1:0] f_derived_sound_set;
 wire [P_NODE_COUNT-1:0] f_commit_set;
 
-reg last_slot_pulse;
 wire round_boundary;
 reg [1:0] eval_counter;
 reg activation_pending;
@@ -158,6 +179,48 @@ function [7:0] count_ones;
     end
 endfunction
 
+// scheduler logic
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        r_next_boundary     <= ~0;  // no boundary until enabled
+        r_slot_id_counter   <= 0;
+        current_slot_id     <= 0;
+        new_slot_pulse      <= 0;
+        last_enable         <= 0;
+        
+        o_tx_allowed        <= 0;
+        o_rx_enabled        <= 0;
+        slot_offset         <= 0;
+    end else begin
+        last_enable    <= i_global_enable;
+        new_slot_pulse <= 0;  // default: no pulse
+
+        if (!i_global_enable) begin
+            r_next_boundary     <= ~0;
+            r_slot_id_counter   <= 0;
+            current_slot_id     <= 0;
+            o_tx_allowed        <= 0;
+            o_rx_enabled        <= 0;
+        end else if (enable_rising_edge) begin
+            r_next_boundary <= ptp_sync_ts + P_SLOT_DURATION_NS;  // next slot after now
+            r_slot_id_counter  <= 0;
+        end else if (ptp_sync_ts >= r_next_boundary) begin
+            // Crossed a slot boundary
+            new_slot_pulse      <= 1;
+            current_slot_id     <= r_slot_id_counter;
+            r_slot_id_counter   <= r_slot_id_counter + 1;
+            r_next_boundary     <= r_next_boundary + P_SLOT_DURATION_NS;
+        end
+        
+        // TX/RX gating: based on offset within current slot
+        // Compute offset as ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS)
+        slot_offset <= ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS);
+        
+        o_tx_allowed <= (slot_offset < (P_SLOT_DURATION_NS - P_GUARD_NS));
+        o_rx_enabled <= (slot_offset >= P_GUARD_NS);
+    end
+end
+
 // ------------------------------------------------
 //  FSM PART 1: state register update (sequential)
 // ------------------------------------------------
@@ -173,6 +236,8 @@ end
 // ------------------------------------------------
 //  FSM PART 2: next state logic and outputs (combinational)
 // ------------------------------------------------
+assign round_boundary = new_slot_pulse;
+
 always @(*) begin
     // default assignments
     next_state = state;
@@ -186,17 +251,6 @@ always @(*) begin
         S_HALT: if (i_ctrl_reboot)              next_state = S_IDLE;
     endcase
 end
-
-// -------------------------
-// Round start detector
-// -------------------------
-
-always @(posedge clk, negedge rst_n) begin
-    if (!rst_n) last_slot_pulse <= 1'b0;
-    else last_slot_pulse <= i_new_slot_pulse;
-end
-
-assign round_boundary = !last_slot_pulse & i_new_slot_pulse;
 
 // -------------------------
 // Clocked registers for stages
@@ -254,7 +308,7 @@ always @(posedge clk, negedge rst_n) begin
                     r_current_sound_set             <= i_ctrl_membership; // initialize sound set to membership at start
                 end
                 if ((activation_pending || i_ctrl_activate) && round_boundary) begin
-                    s_curr_round_id             <= i_current_slot_id;
+                    s_curr_round_id             <= current_slot_id;
                     s_curr_installed_membership <= i_ctrl_membership;
                     s_curr_membership_epoch     <= i_ctrl_membership_epoch;
                     s_curr_sound_bitmap         <= 1 << P_NODE_ID;
