@@ -206,7 +206,7 @@ module ssr_dataplane #
     //                      Ethernet interfaces
     // --------------------------------------------------------------
     // Ethernet (internal at interface module)
-    // TX interface (from DMA to MAC)
+    // TX interface (from DMA to MAC) from host to MAC
     input  wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           s_axis_if_tx_tdata,
     input  wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           s_axis_if_tx_tkeep,
     input  wire [IF_COUNT-1:0]                              s_axis_if_tx_tvalid,
@@ -216,7 +216,7 @@ module ssr_dataplane #
     input  wire [IF_COUNT*AXIS_IF_TX_DEST_WIDTH-1:0]        s_axis_if_tx_tdest,
     input  wire [IF_COUNT*AXIS_IF_TX_USER_WIDTH-1:0]        s_axis_if_tx_tuser,
 
-    // TX interface (from MAC to DMA)
+    // TX interface (from MAC to DMA) output from tx arbiter to MAC
     output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_if_tx_tdata,
     output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_if_tx_tkeep,
     output wire [IF_COUNT-1:0]                              m_axis_if_tx_tvalid,
@@ -238,7 +238,7 @@ module ssr_dataplane #
     output wire [IF_COUNT-1:0]                              m_axis_if_tx_cpl_valid,
     input  wire [IF_COUNT-1:0]                              m_axis_if_tx_cpl_ready,
 
-    // RX interface (from MAC to DMA)
+    // RX interface (from MAC to DMA) from MAC to rx splitter
     input  wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           s_axis_if_rx_tdata,
     input  wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           s_axis_if_rx_tkeep,
     input  wire [IF_COUNT-1:0]                              s_axis_if_rx_tvalid,
@@ -248,7 +248,7 @@ module ssr_dataplane #
     input  wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        s_axis_if_rx_tdest,
     input  wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        s_axis_if_rx_tuser,
 
-    // RX interface (from DMA to MAC)
+    // RX interface (from DMA to MAC) from rx splitter to host DMA
     output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_if_rx_tdata,
     output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_if_rx_tkeep,
     output wire [IF_COUNT-1:0]                              m_axis_if_rx_tvalid,

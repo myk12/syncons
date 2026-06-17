@@ -14,7 +14,7 @@ module consensus_core #(
     parameter P_NODE_COUNT = 3,
     parameter P_NODE_ID = 0,
     parameter P_HEALTH_QUORUM = (P_NODE_COUNT / 2 + 1),
-    parameter P_LOG_ITEM_LEN = 8,   // in bytes
+    parameter P_LOG_ITEM_LEN = 32,   // in bytes
     parameter P_DATA_WIDTH = 512,
     parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8,
     parameter P_MEMBERSHIP_EPOCH_WIDTH = 64, // will change
