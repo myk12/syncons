@@ -26,7 +26,7 @@ module consensus_rx_splitter #(
 
     parameter AXIS_IF_DATA_WIDTH = 512,
     parameter AXIS_IF_KEEP_WIDTH = (AXIS_IF_DATA_WIDTH / 8),
-    parameter AXIS_IF_RX_ID_WIDTH = PORTS_PER_IF > 1 ? $clog2(PORTS_PER_IF) : 1,
+    parameter AXIS_IF_RX_ID_WIDTH = 8,
     parameter AXIS_IF_RX_DEST_WIDTH = 8,
     parameter AXIS_IF_RX_USER_WIDTH = 1
 ) (

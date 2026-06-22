@@ -2,6 +2,7 @@
 
 module consensus_rx #(
     parameter P_NODE_COUNT = 3,
+    parameter P_NODE_ID = 0,
     parameter P_DATA_WIDTH = 512, // Ethernet frame data width of FPGA
     parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8,
     parameter P_ID_WIDTH = PORTS_PER_IF > 1 ? $clog2(PORTS_PER_IF) : 1,
@@ -31,9 +32,9 @@ module consensus_rx #(
     output reg                              o_rx_valid,     // high when a valid packet is parsed
     output reg [7:0]                        o_rx_node_id,   // node ID extracted from packet
     output reg [7:0]                        o_rx_sound_bitmap, // sound bitmap extracted from packet
-    output wire [P_LOG_ITEM_LEN*8-1:0]      o_rx_payload,
-    output wire [63:0]                      o_rx_run_id,
-    output wire [63:0]                      o_rx_round_id,
+    output reg [P_LOG_ITEM_LEN*8-1:0]       o_rx_payload,
+    output reg [63:0]                       o_rx_run_id,
+    output reg [63:0]                       o_rx_round_id,
 );
 
 //------------------------------------------------
@@ -63,11 +64,14 @@ wire [15:0] w_ethertype =   swap16(w_ethertype_net);
 wire [63:0] w_run_id_net = s_axis_tdata[175:112];
 wire [63:0] w_rx_run_id = swap64(w_run_id_net);
 
-wire [7:0] w_rx_node_id = s_axis_tdata[176+:8];
+wire [7:0] w_rx_knowledge_vec = s_axis_tdata[176+:8];
 
-wire [7:0] w_rx_knowledge_vec = s_axis_tdata[184+:8];
+wire [7:0] w_rx_node_id = s_axis_tdata[184+:8];
 
-wire [(P_LOG_ITEM_LEN*8)-1:0] w_rx_payload_net = s_axis_tdata[192+:(P_LOG_ITEM_LEN*8)];
+wire [63:0] w_round_id_net = s_axis_tdata[192+:64];
+wire [63:0] w_rx_round_id = swap64(w_round_id_net);
+
+wire [(P_LOG_ITEM_LEN*8)-1:0] w_rx_payload_net = s_axis_tdata[256+:(P_LOG_ITEM_LEN*8)];
 wire [(P_LOG_ITEM_LEN*8)-1:0] w_rx_payload = {
     swap64(w_rx_payload_net[63:0]),
     swap64(w_rx_payload_net[127:64]),
@@ -75,9 +79,8 @@ wire [(P_LOG_ITEM_LEN*8)-1:0] w_rx_payload = {
     swap64(w_rx_payload_net[255:192])
 };
 
-wire [63:0] w_round_id_net = s_axis_tdata[192+(P_LOG_ITEM_LEN*8)+:64];
-wire [63:0] w_rx_round_id = swap64(w_round_id_net);
-
+// wire [7:0] w_rx_node_id = s_axis_if_rx_tid; // may be used instead
+wire [7:0] w_rx_dest_id = s_axis_if_rx_tdest;
 
 //------------------------------------------------
 //         Flitering Logic
@@ -92,7 +95,7 @@ always @(*) begin // consensus core checks round and run ID
         // Check Ethertype
         if (w_ethertype == P_ETHERNET_TYPE) begin
             // Check Node ID within range
-            if (w_rx_node_id < P_NODE_COUNT) begin
+            if (w_rx_node_id < P_NODE_COUNT && w_rx_dest_id == P_NODE_ID) begin
                 r_packet_valid = 1'b1;
             end
         end

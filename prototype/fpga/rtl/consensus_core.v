@@ -20,7 +20,7 @@ module consensus_core #(
     parameter P_MEMBERSHIP_EPOCH_WIDTH = 64, // will change
     parameter P_SYS_CLOCK_FREQ_HZ = 250_000_000,  // 250 MHz
     parameter P_SLOT_DURATION_NS = 4000,  // 4 microseconds
-    parameter P_GUARD_NS = 100,          // 100 nanoseconds
+    parameter P_GUARD_NS = 50,          // 50 nanoseconds
     parameter PTP_TS_FMT_TOD = 1,
     parameter PTP_TS_WIDTH = PTP_TS_FMT_TOD ? 96 : 64
 ) (
@@ -63,7 +63,9 @@ module consensus_core #(
 
     // transmit trigger
     output reg                                  o_tx_allowed,         // allow transmission
-    output reg                                  o_rx_enabled          // enable receiving
+    output reg                                  o_rx_enabled,          // enable receiving
+    output wire [63:0]                          o_current_slot_id,     // current slot id, same as round id
+    output wire [63:0]                          o_current_run_id       // current run id
 );
 
 // current stage
@@ -102,7 +104,8 @@ reg [PTP_TS_WIDTH-1:0] r_next_boundary;
 reg [63:0] r_slot_id_counter;
 reg [PTP_TS_WIDTH-1:0] slot_offset;
 
-localparam P_TX_DONE        = P_GUARD_NS + P_NODE_ID * 200; // each node gets 200ns slot
+localparam P_TX_START       = P_GUARD_NS + (P_NODE_ID * 200);
+localparam P_TX_DONE        = P_GUARD_NS + (P_NODE_ID + 1) * 200; // each node gets 200ns slot
 
 
 //------------------------------------------------
@@ -216,10 +219,13 @@ always @(posedge clk or negedge rst_n) begin
         // Compute offset as ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS)
         slot_offset <= ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS);
         
-        o_tx_allowed <= (slot_offset < (P_SLOT_DURATION_NS - P_GUARD_NS));
+        o_tx_allowed <= (slot_offset >= P_TX_START && slot_offset < P_TX_DONE);
         o_rx_enabled <= (slot_offset >= P_GUARD_NS);
     end
 end
+
+assign o_current_slot_id = current_slot_id;
+assign o_current_run_id = config_run_id;
 
 // ------------------------------------------------
 //  FSM PART 1: state register update (sequential)
