@@ -190,7 +190,7 @@ always @(posedge clk) begin
                             state <= S_IDLE;
                         end else begin
                             // broadcast to all nodes except self
-                            if (r_target_node_id != P_NODE_ID) begin
+                            if (r_target_node_id != P_NODE_ID && (i_knowledge_vec[r_target_node_id])) begin
                                 m_axis_tdata <= v_packet_flit;
                                 m_axis_tkeep <= {P_KEEP_WIDTH{1'b1}}; // All bytes valid
                                 m_axis_tvalid <= 1'b1;
