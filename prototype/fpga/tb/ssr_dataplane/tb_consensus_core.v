@@ -42,7 +42,7 @@ reg [63:0]                          i_ctrl_run_id;
 reg [P_NODE_COUNT-1:0]              i_ctrl_membership;
 reg                                 i_ctrl_activate;
 reg                                 i_ctrl_reboot;
-reg [P_LOG_ITEM_LEN*8-1:0]          i_ctrl_host_payload;
+// reg [P_LOG_ITEM_LEN*8-1:0]          i_ctrl_host_payload;
 reg [7:0]                           i_rx_sound_bitmap;
 reg [63:0]                          i_rx_run_id;
 reg [63:0]                          i_rx_round_id;
@@ -52,11 +52,11 @@ reg [7:0]                           i_rx_node_id;
 reg [P_LOG_ITEM_LEN*8-1:0]          i_rx_propose;
 
 // Outputs
-wire [P_NODE_COUNT-1:0]             o_alive_mask;
+// wire [P_NODE_COUNT-1:0]             o_alive_mask;
 wire                                o_system_halt;
 
-wire [P_LOG_ITEM_LEN*8*P_NODE_COUNT-1:0]  o_commit_log;
-wire [P_NODE_COUNT-1:0]                   o_commit_valid;
+// wire [P_LOG_ITEM_LEN*8*P_NODE_COUNT-1:0]  o_commit_log;
+// wire [P_NODE_COUNT-1:0]                   o_commit_valid;
 wire [P_NODE_COUNT-1:0]                   o_tx_knowledge_vec;
 wire [P_LOG_ITEM_LEN*8-1:0]               o_tx_propose;
 
@@ -94,12 +94,12 @@ consensus_core #(
     .i_ctrl_membership(i_ctrl_membership),
     .i_ctrl_activate(i_ctrl_activate),
     .i_ctrl_reboot(i_ctrl_reboot),
-    .i_ctrl_host_payload(i_ctrl_host_payload),
+    // .i_ctrl_host_payload(i_ctrl_host_payload),
 
-    .o_alive_mask(o_alive_mask),
+    // .o_alive_mask(o_alive_mask),
     .o_system_halt(o_system_halt),
-    .o_commit_log(o_commit_log),
-    .o_commit_valid(o_commit_valid),
+    // .o_commit_log(o_commit_log),
+    // .o_commit_valid(o_commit_valid),
     .o_tx_knowledge_vec(o_tx_knowledge_vec),
     .o_tx_propose(o_tx_propose),
 
@@ -305,8 +305,8 @@ task trigger_round_with_packets;
         repeat(50) @(posedge clk);
 
         // Monitor outputs
-        $display("Round %0d: commit_valid=%b, halt=%b, tx_knowledge=%b, tx_allowed=%b, rx_enabled=%b",
-                 dut_round_id, o_commit_valid, o_system_halt, o_tx_knowledge_vec, o_tx_allowed, o_rx_enabled);
+        $display("Round %0d: halt=%b, tx_knowledge=%b, tx_allowed=%b, rx_enabled=%b",
+                 dut_round_id, o_system_halt, o_tx_knowledge_vec, o_tx_allowed, o_rx_enabled);
     end
 endtask
 

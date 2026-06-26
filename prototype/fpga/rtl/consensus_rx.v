@@ -17,6 +17,8 @@ module consensus_rx #(
 
     // Control Signals from Scheduler inside consensus core
     input wire                          i_rx_enabled,
+    input wire [63:0]                   i_current_run_id,
+    input wire [63:0]                   i_current_round_id,
 
     // AXI Stream Slave Input
     input wire [P_DATA_WIDTH-1:0]       s_axis_tdata,
@@ -95,7 +97,7 @@ always @(*) begin // consensus core checks round and run ID
         // Check Ethertype
         if (w_ethertype == P_ETHERNET_TYPE) begin
             // Check Node ID within range
-            if (w_rx_node_id < P_NODE_COUNT && w_rx_dest_id == P_NODE_ID) begin
+            if (w_rx_node_id < P_NODE_COUNT && w_rx_dest_id == P_NODE_ID && w_rx_run_id == i_current_run_id && w_rx_round_id == i_current_round_id) begin
                 r_packet_valid = 1'b1;
             end
         end
