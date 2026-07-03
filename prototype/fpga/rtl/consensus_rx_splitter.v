@@ -44,33 +44,33 @@ module consensus_rx_splitter #(
     input  wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        s_axis_if_rx_tuser,
 
     // RX interface (from DMA to MAC) from rx splitter to host DMA
-    output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_if_rx_tdata_dma,
-    output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_if_rx_tkeep_dma,
-    output wire [IF_COUNT-1:0]                              m_axis_if_rx_tvalid_dma,
-    input  wire [IF_COUNT-1:0]                              m_axis_if_rx_tready_dma,
-    output wire [IF_COUNT-1:0]                              m_axis_if_rx_tlast_dma,
-    output wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          m_axis_if_rx_tid_dma,
-    output wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        m_axis_if_rx_tdest_dma,
-    output wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        m_axis_if_rx_tuser_dma,
+    output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_dma_rx_tdata,
+    output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_dma_rx_tkeep,
+    output wire [IF_COUNT-1:0]                              m_axis_dma_rx_tvalid,
+    input  wire [IF_COUNT-1:0]                              m_axis_dma_rx_tready,
+    output wire [IF_COUNT-1:0]                              m_axis_dma_rx_tlast,
+    output wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          m_axis_dma_rx_tid,
+    output wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        m_axis_dma_rx_tdest,
+    output wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        m_axis_dma_rx_tuser,
 
-    output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_if_rx_tdata_cons,
-    output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_if_rx_tkeep_cons,
-    output wire [IF_COUNT-1:0]                              m_axis_if_rx_tvalid_cons,
-    input  wire [IF_COUNT-1:0]                              m_axis_if_rx_tready_cons,
-    output wire [IF_COUNT-1:0]                              m_axis_if_rx_tlast_cons,
-    output wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          m_axis_if_rx_tid_cons,
-    output wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        m_axis_if_rx_tdest_cons,
-    output wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        m_axis_if_rx_tuser_cons
+    output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_cons_rx_tdata,
+    output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_cons_rx_tkeep,
+    output wire [IF_COUNT-1:0]                              m_axis_cons_rx_tvalid,
+    input  wire [IF_COUNT-1:0]                              m_axis_cons_rx_tready,
+    output wire [IF_COUNT-1:0]                              m_axis_cons_rx_tlast,
+    output wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          m_axis_cons_rx_tid,
+    output wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        m_axis_cons_rx_tdest,
+    output wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        m_axis_cons_rx_tuser
 );
 
 localparam [1:0] RX_ROUTE_DROP = 2'd0;
 localparam [1:0] RX_ROUTE_CONS = 2'd1;
 localparam [1:0] RX_ROUTE_DMA  = 2'd2;
 
-wire consensus_ethertype_match = s_axis_app_rx_tvalid &&
-    (s_axis_app_rx_tdata[P_HDR_ETHERTYPE_OFFSET_BYTES*8 +: 16] === {P_CONSENSUS_ETHERTYPE[7:0], P_CONSENSUS_ETHERTYPE[15:8]});
-wire dma_ethertype_match = s_axis_app_rx_tvalid &&
-    (s_axis_app_rx_tdata[P_HDR_ETHERTYPE_OFFSET_BYTES*8 +: 16] === {P_DMA_ETHERTYPE[7:0], P_DMA_ETHERTYPE[15:8]});
+wire consensus_ethertype_match = s_axis_if_rx_tvalid &&
+    (s_axis_if_rx_tdata[P_HDR_ETHERTYPE_OFFSET_BYTES*8 +: 16] === {P_CONSENSUS_ETHERTYPE[7:0], P_CONSENSUS_ETHERTYPE[15:8]});
+wire dma_ethertype_match = s_axis_if_rx_tvalid &&
+    (s_axis_if_rx_tdata[P_HDR_ETHERTYPE_OFFSET_BYTES*8 +: 16] === {P_DMA_ETHERTYPE[7:0], P_DMA_ETHERTYPE[15:8]});
 
 wire [1:0] rx_route_eff = (consensus_ethertype_match ? RX_ROUTE_CONS : (dma_ethertype_match ? RX_ROUTE_DMA : RX_ROUTE_DROP));
 
@@ -87,34 +87,34 @@ always @(*) begin
     m_axis_dma_rx_tlast   = 1'b0;
     m_axis_dma_rx_tuser   = {AXIS_RX_USER_WIDTH{1'b0}};
 
-    s_axis_app_rx_tready  = 1'b1;
+    s_axis_if_rx_tready  = 1'b1;
 
     case (rx_route_eff)
         RX_ROUTE_CONS: begin
-            if (s_axis_app_rx_tvalid) begin
-                m_axis_cons_rx_tdata    = s_axis_app_rx_tdata;
-                m_axis_cons_rx_tkeep    = s_axis_app_rx_tkeep;
-                m_axis_cons_rx_tvalid   = s_axis_app_rx_tvalid;
-                m_axis_cons_rx_tlast    = s_axis_app_rx_tlast;
-                m_axis_cons_rx_tuser    = s_axis_app_rx_tuser;
-                s_axis_cons_rx_tready   = m_axis_cons_rx_tready;
+            if (s_axis_if_rx_tvalid) begin
+                m_axis_cons_rx_tdata    = s_axis_if_rx_tdata;
+                m_axis_cons_rx_tkeep    = s_axis_if_rx_tkeep;
+                m_axis_cons_rx_tvalid   = s_axis_if_rx_tvalid;
+                m_axis_cons_rx_tlast    = s_axis_if_rx_tlast;
+                m_axis_cons_rx_tuser    = s_axis_if_rx_tuser;
+                s_axis_if_rx_tready     = m_axis_cons_rx_tready;
             end
         end
         RX_ROUTE_DMA: begin
-            if (s_axis_app_rx_tvalid) begin
-                m_axis_dma_rx_tdata    = s_axis_app_rx_tdata;
-                m_axis_dma_rx_tkeep    = s_axis_app_rx_tkeep;
-                m_axis_dma_rx_tvalid   = s_axis_app_rx_tvalid;
-                m_axis_dma_rx_tlast    = s_axis_app_rx_tlast;
-                m_axis_dma_rx_tuser    = s_axis_app_rx_tuser;
-                s_axis_dma_rx_tready   = m_axis_dma_rx_tready;
+            if (s_axis_if_rx_tvalid) begin
+                m_axis_dma_rx_tdata    = s_axis_if_rx_tdata;
+                m_axis_dma_rx_tkeep    = s_axis_if_rx_tkeep;
+                m_axis_dma_rx_tvalid   = s_axis_if_rx_tvalid;
+                m_axis_dma_rx_tlast    = s_axis_if_rx_tlast;
+                m_axis_dma_rx_tuser    = s_axis_if_rx_tuser;
+                s_axis_if_rx_tready    = m_axis_dma_rx_tready;
             end
         end
         default: begin
             // Unknown application traffic is dropped at the app boundary.  The
             // datapath should only send app-owned traffic here, so this case is
             // mainly a guard against inconsistent configuration.
-            s_axis_app_rx_tready = 1'b1;
+            s_axis_if_rx_tready = 1'b1;
         end
     endcase
 end

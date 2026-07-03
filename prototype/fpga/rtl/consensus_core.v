@@ -26,7 +26,7 @@ module consensus_core #(
 ) (
     // clock and reset
     input wire                                  clk,
-    input wire                                  rst_n,
+    input wire                                  rst,
 
     // scheduler signals
     input wire                                  i_global_enable,
@@ -36,7 +36,7 @@ module consensus_core #(
     input wire                                  i_rx_valid,
     input wire [7:0]                            i_rx_node_id,
     input wire [7:0]                            i_rx_sound_bitmap, // bitmap of who the sender node sees as alive
-    input wire [P_LOG_ITEM_LEN*8-1:0]           i_rx_payload,
+    // input wire [P_LOG_ITEM_LEN*8-1:0]           i_rx_payload,
     input wire [63:0]                           i_rx_run_id,
     input wire [63:0]                           i_rx_round_id,
 
@@ -183,8 +183,8 @@ function [7:0] count_ones;
 endfunction
 
 // scheduler logic
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+always @(posedge clk) begin
+    if (rst) begin
         r_next_boundary     <= ~0;  // no boundary until enabled
         r_slot_id_counter   <= 0;
         current_round_id     <= 0;
@@ -232,7 +232,7 @@ assign o_current_run_id = config_run_id;
 // ------------------------------------------------
 
 always @(posedge clk) begin
-    if (!rst_n) begin
+    if (rst) begin
         state <= S_IDLE;
     end else begin
         state <= next_state;
@@ -262,8 +262,8 @@ end
 // Clocked registers for stages
 // -------------------------
 
-always @(posedge clk, negedge rst_n) begin
-    if (!rst_n) begin
+always @(posedge clk) begin
+    if (rst) begin
         s_curr_round_id <= 0;
         s_curr_installed_membership <= 0;
         s_curr_membership_epoch <= 0;

@@ -44,7 +44,7 @@ module consensus_tx_arbiter #(
     output reg  [AXIS_TX_USER_WIDTH-1:0]        m_axis_tx_tuser,
     input  wire                                 m_axis_tx_tready,
     output wire [AXIS_IF_TX_ID_WIDTH-1:0]       m_axis_tx_tid,
-    output wire [AXIS_IF_TX_DEST_WIDTH-1:0]     m_axis_tx_tdest,
+    output wire [AXIS_IF_TX_DEST_WIDTH-1:0]     m_axis_tx_tdest
 );
 
 

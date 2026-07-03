@@ -13,7 +13,7 @@ module consensus_tx #(
 ) (
     // clock and reset
     input wire                              clk,
-    input wire                              rst_n,
+    input wire                              rst,
 
     // Control and Data
     input wire                              i_tx_allowed,
@@ -21,6 +21,7 @@ module consensus_tx #(
     input wire [63:0]                       i_current_run_id,
     input wire [P_NODE_COUNT-1:0]           i_knowledge_vec,
     input wire [P_LOG_ITEM_LEN*8-1:0]       i_propose,
+    output reg                              o_tx_start,
 
     // AXI Stream Master Output
     output reg [P_DATA_WIDTH-1:0]           m_axis_tdata,
@@ -126,11 +127,13 @@ always @(*) begin
     }; // not sure if this is right, but doing this to be consistent with rx side parsing
 end
 
+assign o_tx_start = (state == S_IDLE) && tx_allowed_pulse;
+
 //------------------------------------------------
 //         State Machine
 //------------------------------------------------
 always @(posedge clk) begin
-    if (!rst_n) begin
+    if (rst) begin
         state <= S_IDLE;
         m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
         m_axis_tkeep <= {P_KEEP_WIDTH{1'b0}};
@@ -154,7 +157,7 @@ always @(posedge clk) begin
                 m_axis_tuser <= 1'b0;
                 m_axis_tid <= 8'b0; // Use target node ID as TID
                 m_axis_tdest <= 8'b0; // Use target node ID as DEST
-
+                
                 r_target_node_id <= 0;
 
                 if (tx_allowed_pulse) begin
@@ -177,13 +180,13 @@ always @(posedge clk) begin
                 else begin
                     if (m_axis_tready) begin
                         // Check if this is the last node
-                        m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
-                        m_axis_tkeep <= {P_KEEP_WIDTH{1'b0}};
-                        m_axis_tvalid <= 1'b0;
-                        m_axis_tlast <= 1'b0;
-                        m_axis_tuser <= 1'b0;
-                        m_axis_tid <= 8'b0;
-                        m_axis_tdest <= 8'b0;
+                        // m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
+                        // m_axis_tkeep <= {P_KEEP_WIDTH{1'b0}};
+                        // m_axis_tvalid <= 1'b0;
+                        // m_axis_tlast <= 1'b0;
+                        // m_axis_tuser <= 1'b0;
+                        // m_axis_tid <= 8'b0;
+                        // m_axis_tdest <= 8'b0;
 
                         if (r_target_node_id >= P_NODE_COUNT) begin
                             // Finished broadcasting

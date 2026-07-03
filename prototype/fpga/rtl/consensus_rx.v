@@ -13,7 +13,7 @@ module consensus_rx #(
 ) (
     // clock and reset
     input wire                          clk,
-    input wire                          rst_n,
+    input wire                          rst,
 
     // Control Signals from Scheduler inside consensus core
     input wire                          i_rx_enabled,
@@ -36,7 +36,7 @@ module consensus_rx #(
     output reg [7:0]                        o_rx_sound_bitmap, // sound bitmap extracted from packet
     output reg [P_LOG_ITEM_LEN*8-1:0]       o_rx_payload,
     output reg [63:0]                       o_rx_run_id,
-    output reg [63:0]                       o_rx_round_id,
+    output reg [63:0]                       o_rx_round_id
 );
 
 //------------------------------------------------
@@ -108,7 +108,7 @@ end
 //         Output Logic
 //------------------------------------------------
 always @(posedge clk) begin
-    if (!rst_n) begin
+    if (rst) begin
         o_rx_valid <= 0;
         o_rx_node_id <= 0;
         o_rx_sound_bitmap <= 0;

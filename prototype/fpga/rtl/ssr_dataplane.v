@@ -109,7 +109,19 @@ module ssr_dataplane #
     parameter AXIS_IF_TX_DEST_WIDTH = $clog2(PORTS_PER_IF) + 4,
     parameter AXIS_IF_RX_DEST_WIDTH = 8,
     parameter AXIS_IF_TX_USER_WIDTH = 1,
-    parameter AXIS_IF_RX_USER_WIDTH = 1
+    parameter AXIS_IF_RX_USER_WIDTH = 1,
+
+    // Ring Buffer
+    parameter RING_BUFFER_ADDR_WIDTH = 8,
+
+    // Consensus Parameters
+    parameter P_NODE_ID = 0,
+    parameter P_NODE_COUNT = 3,
+    parameter P_LOG_ITEM_LEN = 32,
+    parameter P_MEMBERSHIP_EPOCH_WIDTH = 64,
+    parameter P_SYS_CLOCK_FREQ_HZ = 250_000_000,
+    parameter P_SLOT_DURATION_NS = 4000,
+    parameter P_GUARD_NS = 50;
 )
 (
     input  wire                                     clk,
@@ -267,6 +279,7 @@ localparam SSR_RB_VERSION                           = 32'h00000100; // version 1
 localparam [REG_ADDR_WIDTH-1:0] RBB_COMMON          = 24'h000000; // base address of basic register block
 localparam [REG_ADDR_WIDTH-1:0] RBB_PROPOSAL_QUEUE  = 24'h001000; // base address of DMA register block
 localparam [REG_ADDR_WIDTH-1:0] RBB_COMMIT_QUEUE    = 24'h002000; // base address of commit queue register block
+localparam [REG_ADDR_WIDTH-1:0] RBB_CONSENSUS       = 24'h003000; // base address of consensus register block
 
 // DMA proposal queue
 localparam RAM_SEL_RPOP = 0;
@@ -297,19 +310,25 @@ reg                         reg_wr_ack_common_reg  = 1'b0, reg_wr_ack_common_nex
 reg [REG_DATA_WIDTH-1:0]    reg_rd_data_common_reg = 0, reg_rd_data_common_next;
 reg                         reg_rd_ack_common_reg  = 1'b0, reg_rd_ack_common_next;
 
+reg                         reg_wr_ack_consensus_reg  = 1'b0, reg_wr_ack_consensus_next;
+reg [REG_DATA_WIDTH-1:0]    reg_rd_data_consensus_reg = 0, reg_rd_data_consensus_next;
+reg                         reg_rd_ack_consensus_reg  = 1'b0, reg_rd_ack_consensus_next;
+
 // register select signals
 wire reg_wr_en_common           = reg_wr_en && reg_wr_addr[REG_ADDR_WIDTH-1:12] == RBB_COMMON[REG_ADDR_WIDTH-1:12];
 wire reg_wr_en_proposal_queue   = reg_wr_en && reg_wr_addr[REG_ADDR_WIDTH-1:12] == RBB_PROPOSAL_QUEUE[REG_ADDR_WIDTH-1:12];
 wire reg_wr_en_commit_queue     = reg_wr_en && reg_wr_addr[REG_ADDR_WIDTH-1:12] == RBB_COMMIT_QUEUE[REG_ADDR_WIDTH-1:12];
-wire reg_wr_wait_common, reg_wr_wait_proposal_queue, reg_wr_wait_commit_queue;
-wire reg_wr_ack_common, reg_wr_ack_proposal_queue, reg_wr_ack_commit_queue;
+wire reg_wr_en_consensus        = reg_wr_en && reg_wr_addr[REG_ADDR_WIDTH-1:12] == RBB_CONSENSUS[REG_ADDR_WIDTH-1:12];
+wire reg_wr_wait_common, reg_wr_wait_proposal_queue, reg_wr_wait_commit_queue, reg_wr_wait_consensus;
+wire reg_wr_ack_common, reg_wr_ack_proposal_queue, reg_wr_ack_commit_queue, reg_wr_ack_consensus;
 
 wire reg_rd_en_common           = reg_rd_en && reg_rd_addr[REG_ADDR_WIDTH-1:12] == RBB_COMMON[REG_ADDR_WIDTH-1:12];
 wire reg_rd_en_proposal_queue   = reg_rd_en && reg_rd_addr[REG_ADDR_WIDTH-1:12] == RBB_PROPOSAL_QUEUE[REG_ADDR_WIDTH-1:12];
 wire reg_rd_en_commit_queue     = reg_rd_en && reg_rd_addr[REG_ADDR_WIDTH-1:12] == RBB_COMMIT_QUEUE[REG_ADDR_WIDTH-1:12];
-wire [REG_DATA_WIDTH-1:0]   reg_rd_data_common, reg_rd_data_proposal_queue, reg_rd_data_commit_queue;
-wire                        reg_rd_wait_common, reg_rd_wait_proposal_queue, reg_rd_wait_commit_queue;
-wire                        reg_rd_ack_common, reg_rd_ack_proposal_queue, reg_rd_ack_commit_queue;
+wire reg_rd_en_consensus        = reg_rd_en && reg_rd_addr[REG_ADDR_WIDTH-1:12] == RBB_CONSENSUS[REG_ADDR_WIDTH-1:12];
+wire [REG_DATA_WIDTH-1:0]   reg_rd_data_common, reg_rd_data_proposal_queue, reg_rd_data_commit_queue, reg_rd_data_consensus;
+wire                        reg_rd_wait_common, reg_rd_wait_proposal_queue, reg_rd_wait_commit_queue, reg_rd_wait_consensus;
+wire                        reg_rd_ack_common, reg_rd_ack_proposal_queue, reg_rd_ack_commit_queue, reg_rd_ack_consensus;
 
 // common assignments
 assign reg_wr_ack_common = reg_wr_ack_common_reg;
@@ -652,27 +671,311 @@ commit_queue_inst (
 //                 Ethernet interface modules
 // --------------------------------------------------------------
 // direct through 
-assign m_axis_if_tx_tdata = s_axis_if_tx_tdata;
-assign m_axis_if_tx_tkeep = s_axis_if_tx_tkeep;
-assign m_axis_if_tx_tvalid = s_axis_if_tx_tvalid;
-assign s_axis_if_tx_tready = m_axis_if_tx_tready;
-assign m_axis_if_tx_tlast = s_axis_if_tx_tlast;
-assign m_axis_if_tx_tid = s_axis_if_tx_tid;
-assign m_axis_if_tx_tdest = s_axis_if_tx_tdest;
-assign m_axis_if_tx_tuser = s_axis_if_tx_tuser;
+// assign m_axis_if_tx_tdata = s_axis_if_tx_tdata;
+// assign m_axis_if_tx_tkeep = s_axis_if_tx_tkeep;
+// assign m_axis_if_tx_tvalid = s_axis_if_tx_tvalid;
+// assign s_axis_if_tx_tready = m_axis_if_tx_tready;
+// assign m_axis_if_tx_tlast = s_axis_if_tx_tlast;
+// assign m_axis_if_tx_tid = s_axis_if_tx_tid;
+// assign m_axis_if_tx_tdest = s_axis_if_tx_tdest;
+// assign m_axis_if_tx_tuser = s_axis_if_tx_tuser;
 
-assign m_axis_if_tx_cpl_ts = s_axis_if_tx_cpl_ts;
-assign m_axis_if_tx_cpl_tag = s_axis_if_tx_cpl_tag;
-assign m_axis_if_tx_cpl_valid = s_axis_if_tx_cpl_valid;
-assign s_axis_if_tx_cpl_ready = m_axis_if_tx_cpl_ready;
+// assign m_axis_if_tx_cpl_ts = s_axis_if_tx_cpl_ts;
+// assign m_axis_if_tx_cpl_tag = s_axis_if_tx_cpl_tag;
+// assign m_axis_if_tx_cpl_valid = s_axis_if_tx_cpl_valid;
+// assign s_axis_if_tx_cpl_ready = m_axis_if_tx_cpl_ready;
 
-assign m_axis_if_rx_tdata = s_axis_if_rx_tdata;
-assign m_axis_if_rx_tkeep = s_axis_if_rx_tkeep;
-assign m_axis_if_rx_tvalid = s_axis_if_rx_tvalid;
-assign s_axis_if_rx_tready = m_axis_if_rx_tready;
-assign m_axis_if_rx_tlast = s_axis_if_rx_tlast;
-assign m_axis_if_rx_tid = s_axis_if_rx_tid;
-assign m_axis_if_rx_tdest = s_axis_if_rx_tdest;
-assign m_axis_if_rx_tuser = s_axis_if_rx_tuser;
+// assign m_axis_if_rx_tdata = s_axis_if_rx_tdata;
+// assign m_axis_if_rx_tkeep = s_axis_if_rx_tkeep;
+// assign m_axis_if_rx_tvalid = s_axis_if_rx_tvalid;
+// assign s_axis_if_rx_tready = m_axis_if_rx_tready;
+// assign m_axis_if_rx_tlast = s_axis_if_rx_tlast;
+// assign m_axis_if_rx_tid = s_axis_if_rx_tid;
+// assign m_axis_if_rx_tdest = s_axis_if_rx_tdest;
+// assign m_axis_if_rx_tuser = s_axis_if_rx_tuser;
+
+// --------------------------------------------------------------
+//                 Tx Modules
+// --------------------------------------------------------------
+wire                            tx_rbuffer_wr_en;
+wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_wr_data;
+wire                            tx_rbuffer_rd_en;
+wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_rd_data;
+wire                            tx_rbuffer_empty;
+wire                            tx_rbuffer_full;
+wire                            tx_start;
+wire                            tx_allowed;
+wire [P_LOG_ITEM_LEN-1:0]       tx_propose;
+wire [P_NODE_COUNT-1:0]         tx_knowledge_vec;
+
+wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_tx_tdata;
+wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           axis_cons_tx_tkeep;
+wire [IF_COUNT-1:0]                              axis_cons_tx_tvalid;
+wire [IF_COUNT-1:0]                              axis_cons_tx_tready;
+wire [IF_COUNT-1:0]                              axis_cons_tx_tlast;
+wire [IF_COUNT*AXIS_IF_TX_ID_WIDTH-1:0]          axis_cons_tx_tid;
+wire [IF_COUNT*AXIS_IF_TX_DEST_WIDTH-1:0]        axis_cons_tx_tdest;
+wire [IF_COUNT*AXIS_IF_TX_USER_WIDTH-1:0]        axis_cons_tx_tuser;
+
+
+ring_buffer #(
+    .ADDR_WIDTH(RING_BUFFER_ADDR_WIDTH),
+    .DATA_WIDTH(AXIS_IF_DATA_WIDTH)
+)
+ring_buffer_tx (
+    .clk(clk),
+    .rst(rst),
+    .wr_en(tx_rbuffer_wr_en),
+    .wr_data(tx_rbuffer_wr_data),
+    .rd_en(tx_rbuffer_rd_en),
+    .rd_data(tx_rbuffer_rd_data),
+    .empty(tx_rbuffer_empty),
+    .full(tx_rbuffer_full)
+);
+
+consensus_tx #(
+    .P_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
+    .P_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
+    .P_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
+    .P_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH),
+    .P_NODE_ID(P_NODE_ID),
+    .P_NODE_COUNT(P_NODE_COUNT),
+    .P_LOG_ITEM_LEN(P_LOG_ITEM_LEN)
+) consensus_tx_inst (
+    .clk(clk),
+    .rst(rst),
+
+    .i_tx_allowed(tx_allowed),
+    .i_current_slot_id(current_slot_id),
+    .i_current_run_id(current_run_id),
+    .i_knowledge_vec(tx_knowledge_vec),
+    .i_propose(tx_propose),
+    .o_tx_start(tx_start),
+
+    .m_axis_tdata(axis_cons_tx_tdata),
+    .m_axis_tkeep(axis_cons_tx_tkeep),
+    .m_axis_tvalid(axis_cons_tx_tvalid),
+    .m_axis_tlast(axis_cons_tx_tlast),
+    .m_axis_tuser(axis_cons_tx_tuser),
+    .m_axis_tid(axis_cons_tx_tid),
+    .m_axis_tdest(axis_cons_tx_tdest),
+    .m_axis_tready(axis_cons_tx_tready)
+);
+
+assign tx_rbuffer_rd_en = tx_start;
+assign tx_propose = tx_rbuffer_rd_data;
+
+consensus_tx_arbiter #(
+    .AXIS_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
+    .AXIS_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
+    .AXIS_TX_USER_WIDTH(AXIS_IF_TX_USER_WIDTH),
+    .AXIS_IF_TX_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
+    .AXIS_IF_TX_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH)
+)
+(
+    .s_axis_cons_tx_tdata(axis_cons_tx_tdata),
+    .s_axis_cons_tx_tkeep(axis_cons_tx_tkeep),
+    .s_axis_cons_tx_tvalid(axis_cons_tx_tvalid),
+    .s_axis_cons_tx_tlast(axis_cons_tx_tlast),
+    .s_axis_cons_tx_tuser(axis_cons_tx_tuser),
+    .s_axis_cons_tx_tid(axis_cons_tx_tid),
+    .s_axis_cons_tx_tdest(axis_cons_tx_tdest),
+    .s_axis_cons_tx_tready(axis_cons_tx_tready),
+
+    .s_axis_dma_tx_tdata(s_axis_if_tx_tdata),
+    .s_axis_dma_tx_tkeep(s_axis_if_tx_tkeep),
+    .s_axis_dma_tx_tvalid(s_axis_if_tx_tvalid),
+    .s_axis_dma_tx_tlast(s_axis_if_tx_tlast),
+    .s_axis_dma_tx_tuser(s_axis_if_tx_tuser),
+    .s_axis_dma_tx_tid(s_axis_if_tx_tid),
+    .s_axis_dma_tx_tdest(s_axis_if_tx_tdest),
+    .s_axis_dma_tx_tready(s_axis_if_tx_tready),
+
+    // TX CPL from MAC
+    .s_axis_tx_cpl_ts(s_axis_if_tx_cpl_ts),
+    .s_axis_tx_cpl_tag(s_axis_if_tx_cpl_tag),
+    .s_axis_tx_cpl_valid(s_axis_if_tx_cpl_valid),
+    .s_axis_tx_cpl_ready(s_axis_if_tx_cpl_ready),
+
+    // TX CPL to DMA
+    .m_axis_tx_cpl_ts(m_axis_if_tx_cpl_ts),
+    .m_axis_tx_cpl_tag(m_axis_if_tx_cpl_tag),
+    .m_axis_tx_cpl_valid(m_axis_if_tx_cpl_valid),
+    .m_axis_tx_cpl_ready(m_axis_if_tx_cpl_ready),
+
+    .m_axis_tx_tdata(m_axis_if_tx_tdata),
+    .m_axis_tx_tkeep(m_axis_if_tx_tkeep),
+    .m_axis_tx_tvalid(m_axis_if_tx_tvalid),
+    .m_axis_tx_tlast(m_axis_if_tx_tlast),
+    .m_axis_tx_tuser(m_axis_if_tx_tuser),
+    .m_axis_tx_tready(m_axis_if_tx_tready),
+    .m_axis_tx_tid(m_axis_if_tx_tid),
+    .m_axis_tx_tdest(m_axis_if_tx_tdest)
+);
+
+// --------------------------------------------------------------
+//                 Rx Modules
+// --------------------------------------------------------------
+wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_rx_tdata;
+wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           axis_cons_rx_tkeep;
+wire [IF_COUNT-1:0]                              axis_cons_rx_tvalid;
+wire [IF_COUNT-1:0]                              axis_cons_rx_tready;
+wire [IF_COUNT-1:0]                              axis_cons_rx_tlast;
+wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          axis_cons_rx_tid;
+wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        axis_cons_rx_tdest;
+wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        axis_cons_rx_tuser;
+
+wire rx_enabled;
+wire [P_NODE_ID-1:0] rx_node_id;
+wire [P_NODE_COUNT-1:0] rx_sound_bitmap;
+wire [P_LOG_ITEM_LEN-1:0] rx_payload;
+wire [P_LOG_ITEM_LEN-1:0] rx_run_id;
+wire [P_LOG_ITEM_LEN-1:0] rx_round_id;
+
+ring_buffer #(
+    .ADDR_WIDTH(RING_BUFFER_ADDR_WIDTH),
+    .DATA_WIDTH(AXIS_IF_DATA_WIDTH)
+)
+ring_buffer_rx (
+    .clk(clk),
+    .rst(rst),
+    .wr_en(rx_rbuffer_wr_en),
+    .wr_data(rx_rbuffer_wr_data),
+    .rd_en(rx_rbuffer_rd_en),
+    .rd_data(rx_rbuffer_rd_data),
+    .empty(rx_rbuffer_empty),
+    .full(rx_rbuffer_full)
+);
+
+assign rx_rbuffer_wr_en = rx_valid;
+assign rx_rbuffer_wr_data = rx_payload;
+
+consensus_rx #(
+    .P_NODE_COUNT(P_NODE_COUNT),
+    .P_NODE_ID(P_NODE_ID),
+    .P_DATA_WIDTH(P_DATA_WIDTH),
+    .P_KEEP_WIDTH(P_KEEP_WIDTH),
+    .P_ID_WIDTH(AXIS_IF_RX_ID_WIDTH),
+    .P_DEST_WIDTH(AXIS_IF_RX_DEST_WIDTH),
+    .P_USER_WIDTH(AXIS_IF_RX_USER_WIDTH),
+    .P_ETHERNET_TYPE(P_ETHERNET_TYPE),
+    .P_LOG_ITEM_LEN(P_LOG_ITEM_LEN)
+) consensus_rx_inst (
+    .clk(clk),
+    .rst(rst),
+
+    .i_rx_enabled(rx_enabled),
+    .i_current_slot_id(current_slot_id),
+    .i_current_run_id(current_run_id),
+
+    .s_axis_tdata(axis_cons_rx_tdata),
+    .s_axis_tkeep(axis_cons_rx_tkeep),
+    .s_axis_tvalid(axis_cons_rx_tvalid),
+    .s_axis_tlast(axis_cons_rx_tlast),
+    .s_axis_tid(axis_cons_rx_tid),
+    .s_axis_tdest(axis_cons_rx_tdest),
+    .s_axis_tuser(axis_cons_rx_tuser),
+    .s_axis_tready(axis_cons_rx_tready),
+
+    .o_rx_valid(rx_valid),
+    .o_rx_node_id(rx_node_id),
+    .o_rx_sound_bitmap(rx_sound_bitmap),
+    .o_rx_payload(rx_payload),
+    .o_rx_run_id(rx_run_id),
+    .o_rx_round_id(rx_round_id)
+);
+
+consensus_rx_splitter #(
+    .AXIS_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
+    .AXIS_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
+    .AXIS_RX_USER_WIDTH(AXIS_IF_RX_USER_WIDTH),
+    .AXIS_IF_RX_ID_WIDTH(AXIS_IF_RX_ID_WIDTH),
+    .AXIS_IF_RX_DEST_WIDTH(AXIS_IF_RX_DEST_WIDTH)
+)
+(
+    .s_axis_if_rx_tdata(s_axis_if_rx_tdata),
+    .s_axis_if_rx_tkeep(s_axis_if_rx_tkeep),
+    .s_axis_if_rx_tvalid(s_axis_if_rx_tvalid),
+    .s_axis_if_rx_tlast(s_axis_if_rx_tlast),
+    .s_axis_if_rx_tid(s_axis_if_rx_tid),
+    .s_axis_if_rx_tdest(s_axis_if_rx_tdest),
+    .s_axis_if_rx_tuser(s_axis_if_rx_tuser),
+    .s_axis_if_rx_tready(s_axis_if_rx_tready),
+
+    .m_axis_dma_rx_tdata(m_axis_if_rx_tdata),
+    .m_axis_dma_rx_tkeep(m_axis_if_rx_tkeep),
+    .m_axis_dma_rx_tvalid(m_axis_if_rx_tvalid),
+    .m_axis_dma_rx_tlast(m_axis_if_rx_tlast),
+    .m_axis_dma_rx_tid(m_axis_if_rx_tid),
+    .m_axis_dma_rx_tdest(m_axis_if_rx_tdest),
+    .m_axis_dma_rx_tuser(m_axis_if_rx_tuser),
+    .m_axis_dma_rx_tready(m_axis_if_rx_tready),
+
+    .m_axis_cons_rx_tdata(axis_cons_rx_tdata),
+    .m_axis_cons_rx_tkeep(axis_cons_rx_tkeep),
+    .m_axis_cons_rx_tvalid(axis_cons_rx_tvalid),
+    .m_axis_cons_rx_tlast(axis_cons_rx_tlast),
+    .m_axis_cons_rx_tid(axis_cons_rx_tid),
+    .m_axis_cons_rx_tdest(axis_cons_rx_tdest),    
+    .m_axis_cons_rx_tuser(axis_cons_rx_tuser),
+    .m_axis_cons_rx_tready(axis_cons_rx_tready)
+);
+
+// --------------------------------------------------------------
+//                 Consensus Core
+// --------------------------------------------------------------
+
+wire i_global_enable;
+
+wire [63:0] current_run_id;
+wire [63:0] current_round_id;
+wire [63:0] current_slot_id;
+
+assign current_slot_id = current_round_id;
+
+consensus_core #(
+    .P_NODE_COUNT(P_NODE_COUNT),
+    .P_NODE_ID(P_NODE_ID),
+    .P_LOG_ITEM_LEN(P_LOG_ITEM_LEN),
+    .P_DATA_WIDTH(P_DATA_WIDTH),
+    .P_MEMBERSHIP_EPOCH_WIDTH(P_MEMBERSHIP_EPOCH_WIDTH),
+    .P_SYS_CLOCK_FREQ_HZ(P_SYS_CLOCK_FREQ_HZ),
+    .P_SLOT_DURATION_NS(P_SLOT_DURATION_NS),
+    .P_GUARD_NS(P_GUARD_NS),
+    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD)
+) consensus_core_inst (
+    .clk(clk),
+    .rst(rst),
+
+    // scheduler signals
+    .i_global_enable(i_global_enable),
+    .ptp_sync_ts(ptp_sync_ts_rel),
+    
+    // data interface
+    .i_rx_valid(rx_valid),
+    .i_rx_node_id(rx_node_id),
+    .i_rx_sound_bitmap(rx_sound_bitmap),
+    .i_rx_run_id(rx_run_id),
+    .i_rx_round_id(rx_round_id),
+
+    // control plane
+    .i_ctrl_membership_epoch(i_ctrl_membership_epoch),
+    .i_ctrl_run_id(i_ctrl_run_id),
+    .i_ctrl_membership(i_ctrl_membership),
+    .i_ctrl_activate(i_ctrl_activate),
+    .i_ctrl_reboot(i_ctrl_reboot),
+
+    // status outputs
+    .o_system_halt(o_system_halt),
+
+    // data output
+    .o_tx_knowledge_vec(tx_knowledge_vec),
+
+    // transmit trigger
+    .o_tx_allowed(tx_allowed),
+    .o_rx_enabled(rx_enabled),
+    .o_current_round_id(current_round_id),
+    .o_current_run_id(current_run_id)
+);
 
 endmodule

@@ -2,17 +2,17 @@ module ring_buffer
 # (
     parameter SIZE_BUFFER = 8, // Number of entries in the ring buffer
     parameter DATA_WIDTH = 512, // Width of each entry in bits
-    parameter ADDR_LEN = 3 // Length of address bus in bits
+    parameter ADDR_LEN = $clog2(SIZE_BUFFER) // Length of address bus in bits
 )
 (
     input wire clk,
-    input wire rst_n,
+    input wire rst,
     input wire wr_en, // Write enable
     input wire rd_en, // Read enable
     input wire [DATA_WIDTH-1:0] wr_data, // Data to write
     output reg [DATA_WIDTH-1:0] rd_data, // Data read
-    output reg full, // Buffer full flag
-    output reg empty // Buffer empty flag
+    output wire full, // Buffer full flag
+    output wire empty // Buffer empty flag
 );
 
     
@@ -21,8 +21,8 @@ module ring_buffer
     reg [ADDR_LEN-1:0] rd_ptr; // Read pointer
     reg [ADDR_LEN:0] count; // Count of items in the buffer
 
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always @(posedge clk) begin
+        if (rst) begin
             wr_ptr <= 0;
             rd_ptr <= 0;
             count <= 0;
@@ -40,10 +40,10 @@ module ring_buffer
                 rd_ptr <= rd_ptr + 1;
                 count <= count - 1;
             end
-
-            full <= (count == SIZE_BUFFER);
-            empty <= (count == 0);
         end
     end
+
+    assign full = (count == SIZE_BUFFER);
+    assign empty = (count == 0);
 
 endmodule
