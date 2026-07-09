@@ -231,7 +231,7 @@ def sweep_campaigns(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run randomized SSR fault campaigns.")
+    parser = argparse.ArgumentParser(description="Run randomized protocol fault campaigns.")
     parser.add_argument("--nodes", type=int, default=3)
     parser.add_argument("--rounds", "--epochs", dest="rounds", type=int, default=8)
     parser.add_argument("--trials", type=int, default=100)
@@ -267,7 +267,7 @@ def text_summary(report: dict[str, Any]) -> str:
     summary = report["summary"]
     return "\n".join(
         [
-            "Random SSR fault campaign",
+            "Random protocol fault campaign",
             f"nodes={config['node_count']} rounds={config['rounds']} trials={config['trials']} seed={config['seed']}",
             (
                 "faults="

@@ -1,14 +1,12 @@
-# SSR Documentation
+# Documentation
 
-This directory keeps only the current design notes that are useful for reading,
-maintaining, and extending the codebase.
+This directory contains lightweight notes for navigating the public repository.
 
 Recommended reading order:
 
-1. [protocol_spec.md](./protocol_spec.md)  
-   End-to-end protocol model, terminology, and data-plane/control-plane split.
-2. [reconfiguration.md](./reconfiguration.md)  
-   Recovery triggers, coordinator election, prepare/commit workflow, and
-   activation-round cutover.
-3. [simulator_architecture.md](./simulator_architecture.md)  
+1. [simulator_architecture.md](./simulator_architecture.md)  
    Package layout and responsibility boundaries across the simulator.
+2. [protocol_spec.md](./protocol_spec.md)  
+   Public placeholder for protocol-facing notes.
+3. [reconfiguration.md](./reconfiguration.md)  
+   Public placeholder for recovery-facing notes.
