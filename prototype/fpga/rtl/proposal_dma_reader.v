@@ -3,26 +3,21 @@
 `default_nettype none
 
 /*
- * Proposal DMA reader v1
  *
- * This module fetches proposal from host memory via DMA read and writes them into an external proposal_buffer.
- * 
+ * Proposal DMA reader
+ *
  * Responsibilities:
- *   1. Receive batch configuration from CSR registers.
- *   2. Read current tail slot information from proposal_buffer.
- *   3. Issue a DMA read descriptor to fetch proposal from host memory into the tail slot.
- *   4. Forward write-back beats to proposal_buffer through buf_wr_* interface.
- *   5. Wait for DMA read completion status.
- *   6. Commit the tail slot in proposal_buffer after successful DMA completion.
+ *   1. Receive host proposal batch configuration through CSR.
+ *   2. Obtain the current writable tail slot from proposal_buffer.
+ *   3. Issue DMA read descriptors:
+ *       Host memory -> proposal_buffer RAM.
+ *   4. Wait for DMA read completion status.
+ *   5. Commit the completed tail slot in proposal_buffer.
  *
- *
- * v1 assumptions:
- *   1. Fixed-size proposal slot.
- *   2. One proposal = one DMA read descriptor.
- *   3. DMA read length is always PROPOSAL_SLOT_BYTES.
- *   4. Batch is supported by host_base + index * host_stride.
- *   5. Only one DMA read is outstanding at a time. 
+ * This module does not handle DMA RAM write data directly.
+ * porposal_buffer is the DMA RAM write endpoint.
  */
+
 
 module proposal_dma_reader #
 (   
@@ -37,17 +32,12 @@ module proposal_dma_reader #
     parameter DMA_LEN_WIDTH = 16,
     parameter DMA_TAG_WIDTH = 16,
 
-    // DMA RAM interface configuration
     parameter RAM_SEL_WIDTH = 4,
     parameter RAM_ADDR_WIDTH = 16,
-    parameter RAM_SEG_COUNT = 2,
-    parameter RAM_SEG_DATA_WIDTH = 256*2/RAM_SEG_COUNT,
-    parameter RAM_SEG_BE_WIDTH = RAM_SEG_DATA_WIDTH/8,
-    parameter RAM_SEG_ADDR_WIDTH = RAM_ADDR_WIDTH-$clog2(RAM_SEG_COUNT*RAM_SEG_BE_WIDTH),
-    parameter RAM_PIPELINE = 2,
 
     parameter RAM_SEL_PROP = 0,
     parameter DMA_TAG_PROP = 0,
+
     parameter PROPOSAL_SLOT_BYTES = 1024
 )
 (
@@ -82,24 +72,6 @@ module proposal_dma_reader #
     input  wire [3:0]                               s_axis_dma_read_desc_status_error,
     input  wire                                     s_axis_dma_read_desc_status_valid,
 
-    // DMA RAM write back interface from DMA engine
-    // This is DMA-facing and belongs to proposal_dma_reader
-    input  wire [RAM_SEG_COUNT*RAM_SEL_WIDTH-1:0]           dma_ram_wr_cmd_sel,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        dma_ram_wr_cmd_be,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]      dma_ram_wr_cmd_addr,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      dma_ram_wr_cmd_data,
-    input  wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_cmd_valid,
-    output wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_cmd_ready,
-    output wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_done,
-
-    // Generic buffer write interface to proposal_buffer
-    output wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        buf_wr_be,
-    output wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      buf_wr_data,
-    output wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]      buf_wr_addr,
-    output wire [RAM_SEG_COUNT-1:0]                         buf_wr_valid,
-    input  wire [RAM_SEG_COUNT-1:0]                         buf_wr_ready,
-    input  wire [RAM_SEG_COUNT-1:0]                         buf_wr_done,
-
     // Tail slot interface from proposal_buffer
     input  wire                                             tail_slot_valid,
     input  wire [RAM_ADDR_WIDTH-1:0]                        tail_slot_addr,
@@ -120,53 +92,38 @@ module proposal_dma_reader #
 // - 0x00C: CONTROL         
 // - 0x010: STATUS
 // - 0x014: SCRATCH
-// - 0x018: PROPOSAL_ENTRY_COUNTER
+// - 0x018: ENTRY_COUNTER
 //
-// - 0x100: PROP_BATCH_ADDR_LO          - Lower 32 bits of base address for proposal batch DMA
-// - 0x104: PROP_BATCH_ADDR_HI          - Upper 32 bits of base address for proposal batch DMA
-// - 0x108: PROP_BATCH_LEN              - Length of each proposal entry in bytes
-// - 0x10C: PROP_BATCH_STRIDE_LO       - Lower 32 bits of stride between proposal entries
-// - 0x110: PROP_BATCH_STRIDE_HI       - Upper 32 bits of stride between proposal entries
-// - 0x114: PROP_BATCH_COUNT            - Number of proposal entries to fetch in the batch
-// - 0x118: PROP_BATCH_CONTROL           - Control register for starting/stopping the proposal batch DMA
+// - 0x100: BATCH_ADDR_LO          - Lower 32 bits of base address for proposal batch DMA
+// - 0x104: BATCH_ADDR_HI          - Upper 32 bits of base address for proposal batch DMA
+// - 0x108: BATCH_LEN              - Length of each proposal entry in bytes
+// - 0x10C: BATCH_STRIDE_LO       - Lower 32 bits of stride between proposal entries
+// - 0x110: BATCH_STRIDE_HI       - Upper 32 bits of stride between proposal entries
+// - 0x114: BATCH_COUNT            - Number of proposal entries to fetch in the batch
+// - 0x118: BATCH_CONTROL           - Control register for starting/stopping the proposal batch DMA
 //      bit 0: start
 //      bit 1: clear done
 //      bit 2: clear error
-// - 0x11C: PROP_BATCH_STATUS            - Status register for the proposal batch DMA
+// - 0x11C: BATCH_STATUS            - Status register for the proposal batch DMA
 //      bit 0: running
 //      bit 1: done
 //      bit 2: error
-// - 0x120: PROP_BATCH_ACTIVE_INDEX      - Index of the currently active proposal entry in the batch
-// - 0x124: PROP_BATCH_STATE             - Current state of the proposal batch DMA operation
-// - 0x128: PROP_DMA_STATUS_TAG              - Tag of the last completed DMA read descriptor
-// - 0x12C: PROP_DMA_STATUS_ERROR            - Error code of the last completed DMA read descriptor
-// - 0x130: PROP_DMA_STATUS_VALID            - Valid flag for the last completed DMA read descriptor
-
-localparam integer RBB = RB_BASE_ADDR;
+// - 0x120: BATCH_ACTIVE_INDEX      - Index of the currently active proposal entry in the batch
+// - 0x124: BATCH_STATE             - Current state of the proposal batch DMA operation
+// - 0x128: DMA_STATUS_TAG              - Tag of the last completed DMA read descriptor
+// - 0x12C: DMA_STATUS_ERROR            - Error code of the last completed DMA read descriptor
+// - 0x130: DMA_STATUS_VALID            - Valid flag for the last completed DMA read descriptor
 
 localparam integer DMA_LEN_LIMIT = 1 << 20;
-localparam integer RAM_BEAT_BYTES = RAM_SEG_COUNT * RAM_SEG_BE_WIDTH;
 
 localparam [DMA_TAG_WIDTH-1:0] DMA_TAG_PROP_VALUE = DMA_TAG_PROP;
 localparam [RAM_SEL_WIDTH-1:0] RAM_SEL_PROP_VALUE = RAM_SEL_PROP;
 localparam [DMA_LEN_WIDTH-1:0] PROPOSAL_SLOT_BYTES_LEN = PROPOSAL_SLOT_BYTES;
 
-localparam [2:0]
-    STATE_IDLE = 3'd0,
-    STATE_ISSUE_DMA = 3'd1,
-    STATE_WAIT_DMA = 3'd2,
-    STATE_COMMIT_SLOT = 3'd3,
-    STATE_DONE = 3'd4;
-
 // Configuration checks
 initial begin
     if (PROPOSAL_SLOT_BYTES > DMA_LEN_LIMIT) begin
         $error("PROPOSAL_SLOT_BYTES (%0d) exceeds DMA_LEN_LIMIT (%0d)", PROPOSAL_SLOT_BYTES, DMA_LEN_LIMIT);
-        $finish;
-    end
-
-    if (PROPOSAL_SLOT_BYTES % RAM_BEAT_BYTES != 0) begin
-        $error("PROPOSAL_SLOT_BYTES (%0d) is not a multiple of RAM_BEAT_BYTES (%0d)", PROPOSAL_SLOT_BYTES, RAM_BEAT_BYTES);
         $finish;
     end
 
@@ -179,6 +136,37 @@ end
 // =========================================================================
 //                  Internal signals and registers
 // =========================================================================
+localparam integer RBB = RB_BASE_ADDR;
+// global
+localparam REG_MAGIC            = RBB + 12'h000;
+localparam REG_VERSION          = RBB + 12'h004;
+localparam REG_FEATURES         = RBB + 12'h008;
+localparam REG_CONTROL          = RBB + 12'h00C;
+localparam REG_STATUS           = RBB + 12'h010;
+localparam REG_SCRATCH          = RBB + 12'h014;
+localparam REG_ENTRY_COUNTER    = RBB + 12'h018;
+// DMA descriptor registers
+localparam REG_BATCH_BASE_ADDR_LO      = RBB + 12'h100;
+localparam REG_BATCH_BASE_ADDR_HI      = RBB + 12'h104;
+localparam REG_BATCH_SLOT_LEN          = RBB + 12'h108;
+localparam REG_BATCH_STRIDE_LO    = RBB + 12'h10C;
+localparam REG_BATCH_STRIDE_HI    = RBB + 12'h110;
+localparam REG_BATCH_COUNT        = RBB + 12'h114;
+localparam REG_BATCH_CONTROL      = RBB + 12'h118;
+localparam REG_BATCH_STATUS       = RBB + 12'h11C;
+localparam REG_BATCH_ACTIVE_INDEX = RBB + 12'h120;
+localparam REG_BATCH_STATE        = RBB + 12'h124;
+localparam REG_DMA_STATUS_TAG     = RBB + 12'h128;
+localparam REG_DMA_STATUS_ERROR   = RBB + 12'h12C;
+localparam REG_DMA_STATUS_VALID   = RBB + 12'h130;
+
+localparam [2:0]
+    STATE_IDLE  = 3'd0,
+    STATE_ISSUE_DMA = 3'd1,
+    STATE_WAIT_DMA = 3'd2,
+    STATE_COMMIT_SLOT = 3'd3,
+    STATE_DONE = 3'd4;
+
 reg [2:0] state_reg = STATE_IDLE, state_next;
 
 // CSR register state
@@ -199,8 +187,6 @@ reg                         dma_read_desc_status_valid_reg  = 0, dma_read_desc_s
 reg [REG_DATA_WIDTH-1:0]    scratch_reg = {REG_DATA_WIDTH{1'b0}}, scratch_reg_next; // scratch register for testing read/write access
 reg [REG_DATA_WIDTH-1:0]    proposal_entry_counter_reg = 0, proposal_entry_counter_next;
 
-reg commit_valid_reg = 1'b0;
-
 reg                         prop_batch_run_reg = 1'b0, prop_batch_run_next;
 reg                         prop_batch_done_reg = 1'b0, prop_batch_done_next;
 reg                         prop_batch_error_reg = 1'b0, prop_batch_error_next;
@@ -211,42 +197,12 @@ reg [DMA_ADDR_WIDTH-1:0]    prop_batch_stride_reg = 0, prop_batch_stride_next;
 reg [31:0]                  prop_batch_count_reg = 0, prop_batch_count_next;
 reg [31:0]                  prop_batch_active_index_reg = 0, prop_batch_active_index_next;
 
-// =========================================================================
-//                  Output assignments
-// =========================================================================
-
-assign reg_wr_ack = reg_wr_ack_reg;
-assign reg_rd_ack = reg_rd_ack_reg;
-assign reg_rd_data = reg_rd_data_reg;
-assign reg_wr_wait = 1'b0; // never wait, always ready to accept writes
-assign reg_rd_wait = 1'b0; // never wait, always ready to accept reads
-
-assign m_axis_dma_read_desc_dma_addr    = dma_read_desc_dma_addr_reg;
-assign m_axis_dma_read_desc_ram_sel     = RAM_SEL_PROP_VALUE;
-assign m_axis_dma_read_desc_ram_addr    = dma_read_desc_ram_addr_reg;
-assign m_axis_dma_read_desc_len         = dma_read_desc_len_reg;
-assign m_axis_dma_read_desc_tag         = dma_read_desc_tag_reg;
-assign m_axis_dma_read_desc_valid       = dma_read_desc_valid_reg;
-
-genvar n;
-generate
-    for (n = 0; n < RAM_SEG_COUNT; n = n + 1) begin : dma_wr_forward
-        wire [RAM_SEL_WIDTH-1:0] dma_wr_sel = dma_ram_wr_cmd_sel[n*RAM_SEL_WIDTH +: RAM_SEL_WIDTH];
-        wire dma_wr_sel_prop = (dma_wr_sel == RAM_SEL_PROP_VALUE);
-
-        assign buf_wr_be[n*RAM_SEG_BE_WIDTH +: RAM_SEG_BE_WIDTH] = dma_ram_wr_cmd_be[n*RAM_SEG_BE_WIDTH +: RAM_SEG_BE_WIDTH];
-        assign buf_wr_addr[n*RAM_SEG_ADDR_WIDTH +: RAM_SEG_ADDR_WIDTH] = dma_ram_wr_cmd_addr[n*RAM_SEG_ADDR_WIDTH +: RAM_SEG_ADDR_WIDTH];
-        assign buf_wr_data[n*RAM_SEG_DATA_WIDTH +: RAM_SEG_DATA_WIDTH] = dma_ram_wr_cmd_data[n*RAM_SEG_DATA_WIDTH +: RAM_SEG_DATA_WIDTH];
-        assign buf_wr_valid[n] = dma_ram_wr_cmd_valid[n] && dma_wr_sel_prop;
-        assign dma_ram_wr_cmd_ready[n] = dma_wr_sel_prop ? buf_wr_ready[n] : 1'b0;
-        assign dma_ram_wr_done[n] = dma_wr_sel_prop ? buf_wr_done[n] : 1'b0;
-    end
-endgenerate
-
 assign commit_valid = (state_reg == STATE_COMMIT_SLOT);
 
+wire dma_read_status_match = s_axis_dma_read_desc_status_valid && (s_axis_dma_read_desc_status_tag == dma_read_desc_tag_reg);
+
 // =========================================================================
-//                  Combinational logic
+//                  DMA Reader State Machine
 // =========================================================================
 always @* begin
     state_next = state_reg;
@@ -282,49 +238,49 @@ always @* begin
     proposal_entry_counter_next = proposal_entry_counter_reg;
 
     // ----------------------------------------------------------
-    // Handle register read/write operations
+    //       Control and status register read/write handling
     // ----------------------------------------------------------
     if (reg_wr_en && !reg_wr_ack_reg) begin
         // write operation
         reg_wr_ack_next = 1'b1; // acknowledge the write
         case ({reg_wr_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
             // Header registers (read-only)
-            RBB + 12'h000: ; // PROP_FETCH_MAGIC is read-only
-            RBB + 12'h004: ; // PROP_FETCH_VERSION is read-only
-            RBB + 12'h008: ; // PROP_FETCH_FEATURES is read-only
-            RBB + 12'h00C: ; // PROP_FETCH_CTRL is reserved for future use
-            RBB + 12'h010: ; // PROP_FETCH_STATUS is reserved for future use
-            RBB + 12'h014: scratch_reg_next = reg_wr_data; // Write to scratch register for testing
-            RBB + 12'h018: ; // PROP_FETCH_PROPOSAL_ENTRY_COUNTER is read-only
+            REG_MAGIC: ; // PROP_FETCH_MAGIC is read-only
+            REG_VERSION: ; // PROP_FETCH_VERSION is read-only
+            REG_FEATURES: ; // PROP_FETCH_FEATURES is read-only
+            REG_CONTROL: ; // PROP_FETCH_CTRL is reserved for future use
+            REG_STATUS: ; // PROP_FETCH_STATUS is reserved for future use
+            REG_SCRATCH: scratch_reg_next = reg_wr_data; // Write to scratch register for testing
+            REG_ENTRY_COUNTER: ; // PROP_FETCH_PROPOSAL_ENTRY_COUNTER is read-only
 
             // DMA descriptor registers
-            RBB + 12'h100: begin
+            REG_BATCH_BASE_ADDR_LO: begin
                 if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
                     prop_batch_base_addr_next[31:0] = reg_wr_data;
                 end
             end
-            RBB + 12'h104: begin
+            REG_BATCH_BASE_ADDR_HI: begin
                 if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
                     prop_batch_base_addr_next[63:32] = reg_wr_data;
                 end
             end
-            RBB + 12'h108: ; // fixed slot length in v1, writes ignored
-            RBB + 12'h10C: begin
+            REG_BATCH_SLOT_LEN: ; // fixed slot length in v1, writes ignored
+            REG_BATCH_STRIDE_LO: begin
                 if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
                     prop_batch_stride_next[31:0] = reg_wr_data;
                 end
             end
-            RBB + 12'h110: begin
+            REG_BATCH_STRIDE_HI: begin
                 if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
                     prop_batch_stride_next[63:32] = reg_wr_data;
                 end
             end
-            RBB + 12'h114: begin
+            REG_BATCH_COUNT: begin
                 if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
                     prop_batch_count_next = reg_wr_data;
                 end
             end
-            RBB + 12'h118: begin
+            REG_BATCH_CONTROL: begin
                 // bit 0: start
                 if (reg_wr_data[0]) begin
                     if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
@@ -354,6 +310,13 @@ always @* begin
                     prop_batch_error_next = 1'b0;
                 end
             end
+            REG_BATCH_STATUS: ; // read-only
+            REG_BATCH_ACTIVE_INDEX: ; // read-only
+            REG_BATCH_STATE: ; // read-only
+            
+            REG_DMA_STATUS_TAG: ; // read-only
+            REG_DMA_STATUS_ERROR: ; // read-only
+            REG_DMA_STATUS_VALID: ; // read-only
 
             default: begin
                 reg_wr_ack_next = 1'b0;
@@ -365,29 +328,30 @@ always @* begin
         // read operation - decode address and return data
         reg_rd_ack_next = 1'b1; // acknowledge the read
         case ({reg_rd_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
-            RBB + 12'h000: reg_rd_data_next = 32'h70726f71; // "proq"
-            RBB + 12'h004: reg_rd_data_next = 32'h00000100; // version 1.0
-            RBB + 12'h008: reg_rd_data_next = 32'h00000001; // features (bit 0: basic functionality)
-            RBB + 12'h00C: reg_rd_data_next = 32'h00000000; // control register (reserved, returns 0)
-            RBB + 12'h010: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg}; // status register
-            RBB + 12'h014: reg_rd_data_next = scratch_reg; // read from scratch register for testing
-            RBB + 12'h018: reg_rd_data_next = proposal_entry_counter_reg; // read from proposal entry counter
+            REG_MAGIC: reg_rd_data_next = 32'h70726f71; // "proq"
+            REG_VERSION: reg_rd_data_next = 32'h00000100; // version 1.0
+            REG_FEATURES: reg_rd_data_next = 32'h00000001; // features (bit 0: basic functionality)
+            REG_CONTROL: reg_rd_data_next = 32'h00000000; // control register (reserved, returns 0)
+            REG_STATUS: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg}; // status register
+            REG_SCRATCH: reg_rd_data_next = scratch_reg; // read from scratch register for testing
+            REG_ENTRY_COUNTER: reg_rd_data_next = proposal_entry_counter_reg; // read from proposal entry counter
 
             // DMA descriptor registers
-            RBB + 12'h100: reg_rd_data_next = prop_batch_base_addr_reg[31:0];
-            RBB + 12'h104: reg_rd_data_next = prop_batch_base_addr_reg[63:32];
-            RBB + 12'h108: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_LEN_WIDTH){1'b0}}, PROPOSAL_SLOT_BYTES_LEN}; // fixed slot length in v1
-            RBB + 12'h10C: reg_rd_data_next = prop_batch_stride_reg[31:0];
-            RBB + 12'h110: reg_rd_data_next = prop_batch_stride_reg[63:32];
-            RBB + 12'h114: reg_rd_data_next = prop_batch_count_reg;
+            REG_BATCH_BASE_ADDR_LO: reg_rd_data_next = prop_batch_base_addr_reg[31:0];
+            REG_BATCH_BASE_ADDR_HI: reg_rd_data_next = prop_batch_base_addr_reg[63:32];
+            REG_BATCH_SLOT_LEN: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_LEN_WIDTH){1'b0}}, PROPOSAL_SLOT_BYTES_LEN}; // fixed slot length in v1
+            REG_BATCH_STRIDE_LO: reg_rd_data_next = prop_batch_stride_reg[31:0];
+            REG_BATCH_STRIDE_HI: reg_rd_data_next = prop_batch_stride_reg[63:32];
+            REG_BATCH_COUNT: reg_rd_data_next = prop_batch_count_reg;
 
-            RBB + 12'h118: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
-            RBB + 12'h11C: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
-            RBB + 12'h120: reg_rd_data_next = prop_batch_active_index_reg;
-            RBB + 12'h124: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, state_reg};
-            RBB + 12'h128: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_TAG_WIDTH){1'b0}}, dma_read_desc_status_tag_reg};
-            RBB + 12'h12C: reg_rd_data_next = {{(REG_DATA_WIDTH - 4){1'b0}}, dma_read_desc_status_error_reg};
-            RBB + 12'h130: reg_rd_data_next = {{(REG_DATA_WIDTH - 1){1'b0}}, dma_read_desc_status_valid_reg};
+            REG_BATCH_CONTROL: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
+            REG_BATCH_STATUS: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
+            REG_BATCH_ACTIVE_INDEX: reg_rd_data_next = prop_batch_active_index_reg;
+            REG_BATCH_STATE: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, state_reg};
+            
+            REG_DMA_STATUS_TAG: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_TAG_WIDTH){1'b0}}, dma_read_desc_status_tag_reg};
+            REG_DMA_STATUS_ERROR: reg_rd_data_next = {{(REG_DATA_WIDTH - 4){1'b0}}, dma_read_desc_status_error_reg};
+            REG_DMA_STATUS_VALID: reg_rd_data_next = {{(REG_DATA_WIDTH - 1){1'b0}}, dma_read_desc_status_valid_reg};
             default: begin
                 reg_rd_ack_next = 1'b0;
                 reg_rd_data_next = {REG_DATA_WIDTH{1'b0}};
@@ -430,7 +394,7 @@ always @* begin
 
         // Wait for DMA read completion status
         STATE_WAIT_DMA: begin
-            if (s_axis_dma_read_desc_status_valid) begin
+            if (dma_read_status_match) begin
                 dma_read_desc_status_tag_next = s_axis_dma_read_desc_status_tag;
                 dma_read_desc_status_error_next = s_axis_dma_read_desc_status_error;
                 dma_read_desc_status_valid_next = 1'b1;
@@ -545,6 +509,22 @@ always @(posedge clk) begin
         prop_batch_active_index_reg <= 32'b0;
     end
 end
+
+// =========================================================================
+//                  Output assignments
+// =========================================================================
+assign reg_wr_ack = reg_wr_ack_reg;
+assign reg_rd_ack = reg_rd_ack_reg;
+assign reg_rd_data = reg_rd_data_reg;
+assign reg_wr_wait = 1'b0; // never wait, always ready to accept writes
+assign reg_rd_wait = 1'b0; // never wait, always ready to accept reads
+
+assign m_axis_dma_read_desc_dma_addr    = dma_read_desc_dma_addr_reg;
+assign m_axis_dma_read_desc_ram_sel     = RAM_SEL_PROP_VALUE;
+assign m_axis_dma_read_desc_ram_addr    = dma_read_desc_ram_addr_reg;
+assign m_axis_dma_read_desc_len         = dma_read_desc_len_reg;
+assign m_axis_dma_read_desc_tag         = dma_read_desc_tag_reg;
+assign m_axis_dma_read_desc_valid       = dma_read_desc_valid_reg;
 
 endmodule
 

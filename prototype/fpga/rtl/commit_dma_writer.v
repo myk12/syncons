@@ -13,6 +13,12 @@
  *   - Wait for DMA write completion.
  *   - Pop commit_buf head slot after successful completion.
  *
+ * Host software contract:
+ *   - Configure base address, stride, and capacity before arming.
+ *   - Do not modify an active buffer while it is being written.
+ *   - Do not clear or re-arm an active buffer.
+ *   - CSR writes are aligned full-width 32-bit writes.
+ *
  * This module does not handle RAM read data directly.
  * commit_buf is the DAM RAM read endpoint
  */
@@ -33,7 +39,7 @@ module commit_dma_writer #
     parameter RAM_SEL_WIDTH = 4,
     parameter RAM_ADDR_WIDTH = 16,
 
-    parameter RAM_SEL_COUNT = 1,
+    parameter RAM_SEL_COMMIT = 1,
     parameter DMA_TAG_COMMIT = 0
 )
 (
@@ -82,342 +88,449 @@ module commit_dma_writer #
 // Register map
 // ======================================================================
 //
-// All offsets are relative to RB_BASE_ADDR
+// Global configuration/status
+//  - 0x000: COMMIT_STRIDE_LO       RW
+//  - 0x004: COMMIT_STRIDE_HI       RW
+//  - 0x008: COMMIT_GLOBAL_CONTROL  WO
+//           bit 0: start
+//           bit 1: stop
+//  - 0x00C: COMMIT_GLOBAL_STATUS   RO
+//           bit 0: busy
+//           bit 1: waiting for commit slot
+//           bit 2: waiting for armed buf
+//  - 0x010: COMMIT_ACTIVE_BUFFER   RO
+//           bit 0: current active buffer (0 or 1)
 //
-// - 0x100: COMMIT_BUF0_ADDR_LO
-// - 0x104: COMMIT_BUF0_ADDR_HI
-// - 0x108: COMMIT_BUF1_ADDR_LO
-// - 0x10C: COMMIT_BUF1_ADDR_HI
+//  Buffer 0
+//  - 0x100: COMMIT_BUF0_ADDR_LO        RW
+//  - 0x104: COMMIT_BUF0_ADDR_HI        RW
+//  - 0x108: COMMIT_BUF0_SLOT_CAPACITY  RW
+//  - 0x12C: COMMIT_BUF0_CONTROL        WO
+//           bit 0: arm
+//           bit 1: clear status
+//  - 0x130: COMMIT_BUF0_STATUS         RO
+//           bit 0: armed
+//           bit 1: done
+//           bit 2: error
+//  - 0x134: COMMIT_BUF0_COMPLETED_COUNT    RO
+//  - 0x138: COMMIT_BUF0_ERROR_COUNT        RO
 //
-// - 0x110: COMMIT_STRIDE_LO
-// - 0x114: COMMIT_STRIDE_HI
-// - 0x118: COMMIT_COUNT
-//
-// - 0x11C: COMMIT_CONTROL
-//      bit 0: start
-//      bit 1: stop
-//      bit 2: clear status
-//      bit 8: arm buf 0
-//      bit 9: arm buf 1
-//
-// - 0x120: COMMIT_STATUS
-//      bit 0: busy
-//      bit 1: current buf select
-//      bit 2: buf 0 armed
-//      bit 3: buf 1 armed
-//      bit 4: buf 0 done
-//      bit 5: buf 1 done
-//      bit 6: error
-//      bit 7: waiting for commit slot
-//      bit 8: waiting for armed buf
-//
-// - 0x124: COMMIT_ACTIVE_INDEX
-// - 0x128: COMMIT_BUF0_COMPLETED_COUNT
-// - 0x12C: COMMIT_BUF1_COMPLETED_COUNT
-// - 0x130: COMMIT_ERROR_COUNT
-
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_BUF0_ADDR_LO = RB_BASE_ADDR + 16'h100;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_BUF0_ADDR_HI = RB_BASE_ADDR + 24'h104;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_BUF1_ADDR_LO = RB_BASE_ADDR + 24'h108;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_BUF1_ADDR_HI = RB_BASE_ADDR + 24'h10C;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_STRIDE_LO    = RB_BASE_ADDR + 24'h110;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_STRIDE_HI    = RB_BASE_ADDR + 24'h114;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_COUNT        = RB_BASE_ADDR + 24'h118;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_CONTROL      = RB_BASE_ADDR + 24'h11C;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_STATUS       = RB_BASE_ADDR + 24'h120;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_ACTIVE_INDEX = RB_BASE_ADDR + 24'h124;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_BUF0_COMPLETED_COUNT = RB_BASE_ADDR + 24'h128;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_BUF1_COMPLETED_COUNT = RB_BASE_ADDR + 24'h12C;
-localparam [REG_ADDR_WIDTH-1:0] REG_COMMIT_ERROR_COUNT  = RB_BASE_ADDR + 24'h130;
-
-localparam [RAM_SEG_WIDTH-1:0] RAM_SEL_COMMIT_VALUE = RAM_SEL_COMMIT;
-localparam [DMA_TAG_WIDTH-1:0] DMA_TAG_COMMIT_VALUE = DMA_TAG_COMMIT;
-
-function [31:0] apply_wstrb;
-    input [31:0] old_value;
-    input [31:0] new_value;
-    input [3:0]  strb;
-
-    integer i;
-
-    begin
-        apply_wstrb = old_value;
-        for (i=0; i<4; i=i+1) begin
-            if (strb[i]) begin
-                apply_wstrb[i*8 +: 8] = new_value[i*8 +: 8];
-            end
-        end
-    end
-endfunction
+//  Buffer 1
+//  - 0x200: COMMIT_BUF1_ADDR_LO        RW
+//  - 0x204: COMMIT_BUF1_ADDR_HI        RW
+//  - 0x208: COMMIT_BUF1_SLOT_CAPACITY  RW
+//  - 0x22C: COMMIT_BUF1_CONTROL        WO
+//           bit 0: arm
+//           bit 1: clear status
+//  - 0x230: COMMIT_BUF1_STATUS         RO
+//           bit 0: armed
+//           bit 1: done
+//           bit 2: error
+//  - 0x234: COMMIT_BUF1_COMPLETED_COUNT    RO
+//  - 0x238: COMMIT_BUF1_ERROR_COUNT        RO
 
 // ======================================================================
-// Internal signals
+//                      CSR write logic
 // ======================================================================
+// Global
+localparam REG_COMMIT_MAGIC        = RB_BASE_ADDR + 24'h000000;
+localparam REG_COMMIT_VERSION      = RB_BASE_ADDR + 24'h000004;
+localparam REG_COMMIT_FEATURES     = RB_BASE_ADDR + 24'h000008;
+localparam REG_COMMIT_CONTROL      = RB_BASE_ADDR + 24'h00000C;
+localparam REG_COMMIT_STATUS       = RB_BASE_ADDR + 24'h000010;
+localparam REG_COMMIT_STRIDE_LO     = RB_BASE_ADDR + 24'h000014;
+localparam REG_COMMIT_STRIDE_HI     = RB_BASE_ADDR + 24'h000018;
+localparam REG_COMMIT_ACTIVE_BUFFER = RB_BASE_ADDR + 24'h00001C;
+
+// Buffer 0
+localparam REG_BUF0_ADDR_LO        = RB_BASE_ADDR + 24'h000100;
+localparam REG_BUF0_ADDR_HI        = RB_BASE_ADDR + 24'h000104;
+localparam REG_BUF0_SLOT_CAPACITY  = RB_BASE_ADDR + 24'h000108;
+localparam REG_BUF0_CONTROL        = RB_BASE_ADDR + 24'h00010C;
+localparam REG_BUF0_STATUS         = RB_BASE_ADDR + 24'h000110;
+localparam REG_BUF0_COMPLETED_COUNT = RB_BASE_ADDR + 24'h000114;
+localparam REG_BUF0_ERROR_COUNT     = RB_BASE_ADDR + 24'h000118;
+
+// Buffer 1
+localparam REG_BUF1_ADDR_LO        = RB_BASE_ADDR + 24'h000200;
+localparam REG_BUF1_ADDR_HI        = RB_BASE_ADDR + 24'h000204;
+localparam REG_BUF1_SLOT_CAPACITY  = RB_BASE_ADDR + 24'h000208;
+localparam REG_BUF1_CONTROL        = RB_BASE_ADDR + 24'h00020C;
+localparam REG_BUF1_STATUS         = RB_BASE_ADDR + 24'h000210;
+localparam REG_BUF1_COMPLETED_COUNT = RB_BASE_ADDR + 24'h000214;
+localparam REG_BUF1_ERROR_COUNT     = RB_BASE_ADDR + 24'h000218;
+
+reg reg_wr_ack_reg = 1'b0;
+reg reg_rd_ack_reg = 1'b0;
+reg [REG_DATA_WIDTH-1:0] reg_rd_data_reg = {REG_DATA_WIDTH{1'b0}};
+
+reg [31:0] scratch_reg = 32'd0;
+reg [31:0] error_reg = 32'd0;
+reg [31:0] control_reg = 32'd0;
+
+reg [DMA_ADDR_WIDTH-1:0] commit_stride_reg = {DMA_ADDR_WIDTH{1'b0}};
 reg [DMA_ADDR_WIDTH-1:0] commit_buf0_addr_reg = {DMA_ADDR_WIDTH{1'b0}};
 reg [DMA_ADDR_WIDTH-1:0] commit_buf1_addr_reg = {DMA_ADDR_WIDTH{1'b0}};
-reg [DMA_ADDR_WIDTH-1:0] commit_stride_reg = {DMA_ADDR_WIDTH{1'b0}};
+reg [31:0] commit_buf0_slot_capacity_reg = 32'd0;
+reg [31:0] commit_buf1_slot_capacity_reg = 32'd0;
 
-reg [31:0] commit_count_reg = {DMA_LEN_WIDTH{1'b0}};
+reg start_pulse_reg = 1'b0;
+reg stop_pulse_reg = 1'b0;
+reg buf0_arm_pulse_reg = 1'b0;
+reg buf1_arm_pulse_reg = 1'b0;
+reg buf0_clear_pulse_reg = 1'b0;
+reg buf1_clear_pulse_reg = 1'b0;
 
+// read only for CSR
 reg busy_reg = 1'b0, busy_next;
-reg current_buf_reg =  1'b0, current_buf_next;
+reg active_buf_reg = 1'b0, active_buf_next;
 
-reg [1:0] buf_armed_reg = 2'b00, buf_armed_next;
-reg [1:0] buf_done_reg = 2'b00, buf_done_next;
+reg waiting_slot_reg = 1'b0, waiting_slot_next;
+reg waiting_armed_buf_reg = 1'b0, waiting_armed_buf_next;
 
-reg [31:0] active_index_reg = 32'd0, active_index_next;
+reg stop_pending_reg = 1'b0, stop_pending_next;
+
+// Buffer 0 runtime state
+reg buf0_armed_reg = 1'b0, buf0_armed_next;
+reg buf0_done_reg = 1'b0, buf0_done_next;
 reg [31:0] buf0_completed_count_reg = 32'd0, buf0_completed_count_next;
+reg [31:0] buf0_error_count_reg = 32'd0, buf0_error_count_next;
+
+// Buffer 1 runtime state
+reg buf1_armed_reg = 1'b0, buf1_armed_next;
+reg buf1_done_reg = 1'b0, buf1_done_next;
 reg [31:0] buf1_completed_count_reg = 32'd0, buf1_completed_count_next;
-reg [31:0] error_count_reg = 32'd0, error_count_next;
+reg [31:0] buf1_error_count_reg = 32'd0, buf1_error_count_next;
 
-reg waiting_alot_reg = 1'b0;
-reg waiting_armed_buf_reg = 1'b0;
+// assistant signal
+wire [31:0] commit_global_status_word = {
+    29'd0,
+    waiting_armed_buf_reg,  // bit 2
+    waiting_slot_reg,       // bit 1
+    busy_reg                // bit 0
+};
 
-reg clear_status_pulse_reg = 1'b0;
-reg arm0_pulse_reg = 1'b0;
-reg arm1_pulse_reg = 1'b0;
+wire [31:0] commit_buf0_status_word = {
+    29'd0,
+    buf0_error_count_reg != 32'd0, // bit 2
+    buf0_done_reg,                 // bit 1
+    buf0_armed_reg                 // bit 0
+};
 
-reg wr_ack_reg = 1'b0;
-reg rd_ack_reg = 1'b0;
-reg [REG_DATA_WIDTH-1:0] rd_data_reg = {REG_DATA_WIDTH{1'b0}};
+wire [31:0] commit_buf1_status_word = {
+    29'd0,
+    buf1_error_count_reg != 32'd0, // bit 2
+    buf1_done_reg,                 // bit 1
+    buf1_armed_reg                 // bit 0
+};
 
-assign reg_wr_wait = 1'b0;
-assign reg_wr_ack = wr_ack_reg;
-
-assign reg_rd_wait = 1'b0;
-assign reg_rd_ack = rd_ack_reg;
-assign reg_rd_data = rd_data_reg;
-
-// ------------------------------------------
-// DMA write FSM
 // -----------------------------------------
-localparam [2:0] 
-        STATE_IDLE                  = 3'd0,
-        STATE_SELECT_BUFFER         = 3'd1,
-        STATE_WAIT_ARMED_BUFFER     = 3'd2,
-        STATE_WAIT_SLOT             = 3'd3,
-        STATE_ISSUE_DMA             = 3'd4,
-        STATE_WAIT_DMA              = 3'd5,
-        STATE_POP_SLOT              = 3'd6;
-
-reg [2:0] state_reg = STATE_IDLE;
-
-reg [DMA_ADDR_WIDTH-1:0]    dma_write_desc_dma_addr_reg = {DMA_ADDR_WIDTH{1'b0}}, dma_write_desc_dma_addr_next;
-reg [RAM_SEL_WIDTH-1:0]     dma_write_desc_ram_sel_reg = {RAM_SEL_WIDTH{1'b0}}, dma_write_desc_ram_sel_next;
-reg [RAM_ADDR_WIDTH-1:0]    dma_write_desc_ram_addr_reg = {RAM_ADDR_WIDTH{1'b0}}, dma_write_desc_ram_addr_next;
-reg [DMA_IMM_WIDTH-1:0]     dma_write_desc_imm_reg = {DMA_IMM_WIDTH{1'b0}}, dma_write_desc_imm_next;
-reg                         dma_write_desc_imm_en_reg = 1'b0;
-reg [DMA_LEN_WIDTH-1:0]     dma_write_desc_len_reg = {DMA_LEN_WIDTH{1'b0}}, dma_write_desc_len_next;
-reg [DMA_TAG_WIDTH-1:0]     dma_write_desc_tag_reg = {DMA_TAG_WIDTH{1'b0}}, dma_write_desc_tag_next;
-reg                         dma_write_desc_valid_reg = 1'b0, dma_write_desc_valid_next;
-
-reg head_slot_pop_valid_reg = 1'b0;
-
-wire current_buf_armed = current_buf_reg ? buf_armed_reg[1] : buf_armed_reg[0];
-wire other_buf_armed = current_buf_reg ? buf_armed_reg[0] : buf_armed_reg[1];
-wire [DMA_ADDR_WIDTH-1:0] current_buf_base_addr =  current_buf_reg ? commit_buf1_addr_reg : commit_buf0_addr_reg;
-
-wire [DMA_ADDR_WIDTH-1:0] active_index_dma = active_index_reg;
-
-wire [DMA_ADDR_WIDTH-1:0] commit_dma_dst_addr = current_buf_base_addr + (active_index_dma << 2);
-
-wire commit_count_zero = commit_count_reg == 32'd0;
-
-wire dma_write_status_match = s_axis_dma_write_desc_status_valid &&
-    (s_axis_dma_write_desc_status_tag == DMA_TAG_COMMIT_VALUE);
-
-wire dma_write_status_error = dma_write_status_match && (s_axis_dma_write_desc_status_error != 4'd0);
-
-assign m_axis_dma_write_desc_dma_addr = dma_write_desc_dma_addr_reg;
-assign m_axis_dma_write_desc_ram_sel = dma_write_desc_ram_sel_reg;
-assign m_axis_dma_write_desc_ram_addr = dma_write_desc_ram_addr_reg;
-assign m_axis_dma_write_desc_imm = dma_write_desc_imm_reg;
-assign m_axis_dma_write_desc_imm_en = dma_write_desc_imm_en_reg;
-assign m_axis_dma_write_desc_len = dma_write_desc_len_reg;
-assign m_axis_dma_write_desc_tag = dma_write_desc_tag_reg;
-assign m_axis_dma_write_desc_valid = dma_write_desc_valid_reg;
-assign head_slot_pop_valid = head_slot_pop_valid_reg;
-
-// ======================================================================
-// CSR write logic
-// ======================================================================
+//          CSR read/write logic
+// -----------------------------------------
 always @(posedge clk) begin
-    clear_status_pulse_reg <= 1'b0;
-    arm0_pulse_reg <= 1'b0;
-    arm1_pulse_reg <= 1'b0;
+    reg_wr_ack_reg <= 1'b0;
+    reg_rd_ack_reg <= 1'b0;
+    reg_rd_data_reg <= {REG_DATA_WIDTH{1'b0}};
 
-    wr_ack_reg <= 1'b0;
-    rd_ack_reg <= 1'b0;
+    start_pulse_reg <= 1'b0;
+    stop_pulse_reg <= 1'b0;
 
+    buf0_arm_pulse_reg <= 1'b0;
+    buf1_arm_pulse_reg <= 1'b0;
+    buf0_clear_pulse_reg <= 1'b0;
+    buf1_clear_pulse_reg <= 1'b0;
+
+    // write logic
     if (reg_wr_en && !reg_wr_ack_reg) begin
         reg_wr_ack_reg <= 1'b1;
 
-        case (reg_wr_addr)
-            REG_COMMIT_BUF0_ADDR_LO: commit_buf0_addr_reg[31:0] <= apply_wstrb(commit_buf0_addr_reg[31:0], reg_wr_data, reg_wr_strb);
-            REG_COMMIT_BUF0_ADDR_HI: commit_buf0_addr_reg[63:32] <= apply_wstrb(commit_buf0_addr_reg[63:32], reg_wr_data, reg_wr_strb);
-            REG_COMMIT_BUF1_ADDR_LO: commit_buf1_addr_reg[31:0] <= apply_wstrb(commit_buf1_addr_reg[31:0], reg_wr_data, reg_wr_strb);
-            REG_COMMIT_BUF1_ADDR_HI: commit_buf1_addr_reg[63:32] <= apply_wstrb(commit_buf1_addr_reg[63:32], reg_wr_data, reg_wr_strb);
-            REG_COMMIT_STRIDE_LO: commit_stride_reg[31:0] <= apply_wstrb(commit_stride_reg[31:0], reg_wr_data, reg_wr_strb);
-            REG_COMMIT_STRIDE_HI: commit_stride_reg[63:32] <= apply_wstrb(commit_stride_reg[63:32], reg_wr_data, reg_wr_strb);
-            REG_COMMIT_COUNT: commit_count_reg <= apply_wstrb(commit_count_reg, reg_wr_data, reg_wr_strb);
+        case ({reg_wr_addr[REG_ADDR_WIDTH-1:2], 2'b00}) 
+            // global
+            REG_COMMIT_STRIDE_LO: commit_stride_reg[31:0] <= reg_wr_data[31:0];
+            REG_COMMIT_STRIDE_HI: commit_stride_reg[63:32] <= reg_wr_data[31:0];
             REG_COMMIT_CONTROL: begin
-                if (reg_wr_data[2]) begin
-                    clear_status_pulse_reg <= 1'b1;
+                start_pulse_reg <= reg_wr_data[0];
+                stop_pulse_reg <= reg_wr_data[1];
+            end
 
-                    active_index_reg <= 32'd0;
-                    buf0_completed_count_reg <= 32'd0;
-                    buf1_completed_count_reg <= 32'd0;
-                    error_count_reg <= 32'd0;
-                    buf_done_reg <= 2'b00;
-                end
+            // buffer 0
+            REG_BUF0_ADDR_LO: commit_buf0_addr_reg[31:0] <= reg_wr_data[31:0];
+            REG_BUF0_ADDR_HI: commit_buf0_addr_reg[63:32] <= reg_wr_data[31:0];
+            REG_BUF0_SLOT_CAPACITY: commit_buf0_slot_capacity_reg <= reg_wr_data[31:0];
+            REG_BUF0_CONTROL: begin
+                buf0_arm_pulse_reg <= reg_wr_data[0];
+                buf0_clear_pulse_reg <= reg_wr_data[1];
+            end
 
-                if (reg_wr_data[8]) begin
-                    arm0_pulse_reg <= 1'b1;
-                    buf_armed_reg[0] <= 1'b1;
-                    buf_done_reg[0] <= 1'b0;
-                    buf0_completed_count_reg <= 32'd0;
-                end
-
-                if (reg_rd_data[9]) begin
-                    arm1_pulse_reg <= 1'b1;
-                    buf_armed_reg[1] <= 1'b1;
-                    buf_done_reg[1] <= 1'b0;
-                    buf1_completed_count_reg <= 32'd0;
-                end
+            // buffer 1
+            REG_BUF1_ADDR_LO: commit_buf1_addr_reg[31:0] <= reg_wr_data[31:0];
+            REG_BUF1_ADDR_HI: commit_buf1_addr_reg[63:32] <= reg_wr_data[31:0];
+            REG_BUF1_SLOT_CAPACITY: commit_buf1_slot_capacity_reg <= reg_wr_data[31:0];
+            REG_BUF1_CONTROL: begin
+                buf1_arm_pulse_reg <= reg_wr_data[0];
+                buf1_clear_pulse_reg <= reg_wr_data[1];
             end
 
             default: begin
-                // Ignore writes to other addresses
+                // acknowlege but ignore writes to other addresses
+                reg_wr_ack_reg <= 1'b1; 
             end
         endcase
     end
 
+    // read logic
     if (reg_rd_en && !reg_rd_ack_reg) begin
+
         reg_rd_ack_reg <= 1'b1;
         reg_rd_data_reg <= {REG_DATA_WIDTH{1'b0}};
 
-        case (reg_rd_addr)
-            REG_COMMIT_BUF0_ADDR_LO: rd_data_reg <= commit_buf0_addr_reg[31:0];
-            REG_COMMIT_BUF0_ADDR_HI: rd_data_reg <= commit_buf0_addr_reg[63:32];
-            REG_COMMIT_BUF1_ADDR_LO: rd_data_reg <= commit_buf1_addr_reg[31:0];
-            REG_COMMIT_BUF1_ADDR_HI: rd_data_reg <= commit_buf1_addr_reg[63:32];
-            REG_COMMIT_STRIDE_LO: rd_data_reg <= commit_stride_reg[31:0];
-            REG_COMMIT_STRIDE_HI: rd_data_reg <= commit_stride_reg[63:32];
-            REG_COMMIT_COUNT: rd_data_reg <= commit_count_reg;
-            REG_COMMIT_CONTROL: rd_data_reg <= {26'd0,
-                                                clear_status_pulse_reg,
-                                                2'b00,
-                                                arm0_pulse_reg,
-                                                arm1_pulse_reg};
-            REG_COMMIT_STATUS: rd_data_reg <= {24'd0,
-                                                busy_reg,
-                                                current_buf_reg,
-                                                buf_armed_reg,
-                                                buf_done_reg,
-                                                error_count_reg != 32'd0,
-                                                waiting_alot_reg,
-                                                waiting_armed_buf_reg};
-            REG_COMMIT_ACTIVE_INDEX: rd_data_reg <= active_index_reg;
-            REG_COMMIT_BUF0_COMPLETED_COUNT: rd_data_reg <= buf0_completed_count_reg;
-            REG_COMMIT_BUF1_COMPLETED_COUNT: rd_data_reg <= buf1_completed_count_reg;
-            REG_COMMIT_ERROR_COUNT: rd_data_reg <= error_count_reg;
+        case ({reg_rd_addr[REG_ADDR_WIDTH-1:2], 2'b00})
+            // global
+            REG_COMMIT_MAGIC: reg_rd_data_reg <= 32'h636f6d71; // "comq"
+            REG_COMMIT_VERSION: reg_rd_data_reg <= 32'h00000100; // version 1.0
+            REG_COMMIT_FEATURES: reg_rd_data_reg <= 32'h00000001; // feature bits
+            REG_COMMIT_CONTROL: reg_rd_data_reg <= control_reg;
+            REG_COMMIT_STATUS: reg_rd_data_reg <= commit_global_status_word;
+            REG_COMMIT_ACTIVE_BUFFER: reg_rd_data_reg <= {31'd0, active_buf_reg};
+
+            REG_COMMIT_STRIDE_LO: reg_rd_data_reg <= commit_stride_reg[31:0];
+            REG_COMMIT_STRIDE_HI: reg_rd_data_reg <= commit_stride_reg[63:32];
+            REG_COMMIT_CONTROL: reg_rd_data_reg <= control_reg;
+
+            // buffer 0
+            REG_BUF0_ADDR_LO: reg_rd_data_reg <= commit_buf0_addr_reg[31:0];
+            REG_BUF0_ADDR_HI: reg_rd_data_reg <= commit_buf0_addr_reg[63:32];
+            REG_BUF0_SLOT_CAPACITY: reg_rd_data_reg <= commit_buf0_slot_capacity_reg;
+            REG_BUF0_STATUS: reg_rd_data_reg <= commit_buf0_status_word;
+            REG_BUF0_COMPLETED_COUNT: reg_rd_data_reg <= buf0_completed_count_reg;
+            REG_BUF0_ERROR_COUNT: reg_rd_data_reg <= buf0_error_count_reg;
+
+            // buffer 1
+            REG_BUF1_ADDR_LO: reg_rd_data_reg <= commit_buf1_addr_reg[31:0];
+            REG_BUF1_ADDR_HI: reg_rd_data_reg <= commit_buf1_addr_reg[63:32];
+            REG_BUF1_SLOT_CAPACITY: reg_rd_data_reg <= commit_buf1_slot_capacity_reg;
+            REG_BUF1_STATUS: reg_rd_data_reg <= commit_buf1_status_word;
+            REG_BUF1_COMPLETED_COUNT: reg_rd_data_reg <= buf1_completed_count_reg;
+            REG_BUF1_ERROR_COUNT: reg_rd_data_reg <= buf1_error_count_reg;
 
             default: begin
                 // Ignore reads from other addresses
-                rd_data_reg <= {REG_DATA_WIDTH{1'b0}};
+                reg_rd_data_reg <= {REG_DATA_WIDTH{1'b0}};
+                reg_rd_ack_reg <= 1'b1;
             end
         endcase
     end
 
     if (rst) begin
+        reg_wr_ack_reg <= 1'b0;
+        reg_rd_ack_reg <= 1'b0;
+        reg_rd_data_reg <= {REG_DATA_WIDTH{1'b0}};
+
+        start_pulse_reg <= 1'b0;
+        stop_pulse_reg <= 1'b0;
+
+        commit_stride_reg <= {DMA_ADDR_WIDTH{1'b0}};
         commit_buf0_addr_reg <= {DMA_ADDR_WIDTH{1'b0}};
         commit_buf1_addr_reg <= {DMA_ADDR_WIDTH{1'b0}};
-        commit_stride_reg <= {DMA_ADDR_WIDTH{1'b0}};
-        commit_count_reg <= {DMA_LEN_WIDTH{1'b0}};
-
-        busy_reg <= 1'b0;
-        current_buf_reg <= 1'b0;
-
-        buf_armed_reg <= 2'b00;
-        buf_done_reg <= 2'b00;
-
-        waiting_alot_reg <= 1'b0;
-        waiting_armed_buf_reg <= 1'b0;
-
-        active_index_reg <= 32'd0;
-        buf0_completed_count_reg <= 32'd0;
-        buf1_completed_count_reg <= 32'd0;
-        error_count_reg <= 32'd0;
-
-        clear_status_pulse_reg <= 1'b0;
-        arm0_pulse_reg <= 1'b0;
-        arm1_pulse_reg <= 1'b0;
-
-        wr_ack_reg <= 1'b0;
-        rd_ack_reg <= 1'b0;
+        commit_buf0_slot_capacity_reg <= 32'd0;
+        commit_buf1_slot_capacity_reg <= 32'd0;
+        buf0_arm_pulse_reg <= 1'b0;
+        buf1_arm_pulse_reg <= 1'b0;
+        buf0_clear_pulse_reg <= 1'b0;
+        buf1_clear_pulse_reg <= 1'b0;
     end
 end
 
+// Output assignments
+assign reg_wr_wait = 1'b0;
+assign reg_wr_ack = reg_wr_ack_reg;
+assign reg_rd_wait = 1'b0;
+assign reg_rd_ack = reg_rd_ack_reg;
+assign reg_rd_data = reg_rd_data_reg;
+
 // ======================================================================
-// Write state transitions
+//                  DMA write FSM combinational logic
 // ======================================================================
+
+// DMA write FSM
+localparam [2:0] 
+        STATE_IDLE          = 3'd0,
+        STATE_WAIT_BUFFER   = 3'd1,
+        STATE_WAIT_SLOT     = 3'd2,
+        STATE_ISSUE_DMA     = 3'd3,
+        STATE_WAIT_DMA      = 3'd4,
+        STATE_POP_SLOT      = 3'd5;
+
+reg [2:0] state_reg = STATE_IDLE, state_next;
+
+// assistant signals
+localparam [RAM_SEL_WIDTH-1:0] RAM_SEL_COMMIT_VALUE = RAM_SEL_COMMIT;
+localparam [DMA_TAG_WIDTH-1:0] DMA_TAG_COMMIT_VALUE = DMA_TAG_COMMIT;
+// buffer status
+wire active_buf_armed = active_buf_reg ? buf1_armed_reg : buf0_armed_reg;
+wire [DMA_ADDR_WIDTH-1:0] active_buf_base_addr = active_buf_reg ? commit_buf1_addr_reg : commit_buf0_addr_reg;
+wire [31:0] active_buf_slot_capacity = active_buf_reg ? commit_buf1_slot_capacity_reg : commit_buf0_slot_capacity_reg;
+wire [31:0] active_buf_completed_count = active_buf_reg ? buf1_completed_count_reg : buf0_completed_count_reg;
+
+wire active_buf_ready = active_buf_armed && active_buf_slot_capacity != 32'd0;
+wire [DMA_ADDR_WIDTH-1:0] active_buf_completed_count_dma = active_buf_completed_count;
+wire [DMA_ADDR_WIDTH-1:0] commit_dma_dst_addr = active_buf_base_addr + (active_buf_completed_count_dma * commit_stride_reg);
+
+// DMA write descriptor signals
+reg [DMA_ADDR_WIDTH-1:0]    dma_write_desc_dma_addr_reg = {DMA_ADDR_WIDTH{1'b0}}, dma_write_desc_dma_addr_next;
+reg [RAM_SEL_WIDTH-1:0]     dma_write_desc_ram_sel_reg = {RAM_SEL_WIDTH{1'b0}}, dma_write_desc_ram_sel_next;
+reg [RAM_ADDR_WIDTH-1:0]    dma_write_desc_ram_addr_reg = {RAM_ADDR_WIDTH{1'b0}}, dma_write_desc_ram_addr_next;
+reg [DMA_LEN_WIDTH-1:0]     dma_write_desc_len_reg = {DMA_LEN_WIDTH{1'b0}}, dma_write_desc_len_next;
+reg [DMA_TAG_WIDTH-1:0]     dma_write_desc_tag_reg = {DMA_TAG_WIDTH{1'b0}}, dma_write_desc_tag_next;
+reg                         dma_write_desc_valid_reg = 1'b0, dma_write_desc_valid_next;
+
+reg head_slot_pop_valid_reg = 1'b0, head_slot_pop_valid_next;
+
+// DMA handshake and status helper signals
+wire dma_write_desc_fire = dma_write_desc_valid_reg && m_axis_dma_write_desc_ready;
+wire dma_write_status_match = s_axis_dma_write_desc_status_valid && s_axis_dma_write_desc_status_tag == DMA_TAG_COMMIT_VALUE;
+wire dma_write_status_error = dma_write_status_match && s_axis_dma_write_desc_status_error != 4'd0;
+
+wire head_slot_pop_fire = head_slot_pop_valid_reg && head_slot_pop_ready;
+
+// -----------------------------------------------------
+//         DMA write FSM combinational logic
+// -----------------------------------------------------
 always @(*) begin
     state_next = state_reg;
 
-    // Default values
     busy_next = busy_reg;
-    current_buf_next = current_buf_reg;
-    buf_armed_next = buf_armed_reg;
-    buf_done_next = buf_done_reg;
+    active_buf_next = active_buf_reg;
 
-    active_index_next = active_index_reg;
+    waiting_slot_next = waiting_slot_reg;
+    waiting_armed_buf_next = waiting_armed_buf_reg;
+
+    stop_pending_next = stop_pending_reg;
+
+    // buffer 0
+    buf0_armed_next = buf0_armed_reg;
+    buf0_done_next = buf0_done_reg;
     buf0_completed_count_next = buf0_completed_count_reg;
-    buf1_completed_count_next = buf1_completed_count_reg;
-    error_count_next = error_count_reg;
+    buf0_error_count_next = buf0_error_count_reg;
 
-    dma_write_desc_valid_next = dma_write_desc_valid_reg;
+    // buffer 1
+    buf1_armed_next = buf1_armed_reg;
+    buf1_done_next = buf1_done_reg;
+    buf1_completed_count_next = buf1_completed_count_reg;
+    buf1_error_count_next = buf1_error_count_reg;
+
+    // DMA descriptor signals
+    dma_write_desc_dma_addr_next = dma_write_desc_dma_addr_reg;
+    dma_write_desc_ram_sel_next = dma_write_desc_ram_sel_reg;
+    dma_write_desc_ram_addr_next = dma_write_desc_ram_addr_reg;
+    dma_write_desc_len_next = dma_write_desc_len_reg;
+    dma_write_desc_tag_next = dma_write_desc_tag_reg;
+    dma_write_desc_valid_next = dma_write_desc_valid_reg && !dma_write_desc_fire;
+
+    // commit_buf slot pop signals
     head_slot_pop_valid_next = head_slot_pop_valid_reg;
 
-    waiting_slot_next = 1'b0;
-    waiting_armed_buf_next = 1'b0;
+    // ------------------------------------------------
+    // Per-buffer CSR commands
+    // 
+    // Host contract:
+    //     - arm/clear an inactive buffer, or configure 
+    //       buffers before start.
+    //     - do not re-arm the currently active buffer 
+    //       while it is being written.
+    // ------------------------------------------------
+    if (buf0_clear_pulse_reg) begin
+        buf0_done_next = 1'b0;
+        buf0_completed_count_next = 32'd0;
+        buf0_error_count_next = 32'd0;
+    end    
 
+    if (buf0_arm_pulse_reg) begin
+        buf0_armed_next = 1'b1;
+        buf0_done_next = 1'b0;
+        buf0_completed_count_next = 32'd0;
+        buf0_error_count_next = 32'd0;
+    end
+
+    if (buf1_clear_pulse_reg) begin
+        buf1_done_next = 1'b0;
+        buf1_completed_count_next = 32'd0;
+        buf1_error_count_next = 32'd0;
+    end
+
+    if (buf1_arm_pulse_reg) begin
+        buf1_armed_next = 1'b1;
+        buf1_done_next = 1'b0;
+        buf1_completed_count_next = 32'd0;
+        buf1_error_count_next = 32'd0;
+    end
+
+    // ------------------------------------------------
+    //              FSM state transitions
+    // ------------------------------------------------
     case (state_reg)
+        // Idle state: wait for start signal
         STATE_IDLE: begin
+            busy_next = 1'b0;
+
             dma_write_desc_valid_next = 1'b0;
             head_slot_pop_valid_next = 1'b0;
 
-            if (start_cmd) begin
+            stop_pending_next = 1'b0;
+
+            if (start_pulse_reg && !stop_pulse_reg) begin
                 busy_next = 1'b1;
-                active_index_next = 32'd0;
-                state_next = STATE_SELECT_BUFFER;
+                state_next = STATE_WAIT_BUFFER;
             end
         end
 
-        STATE_SELECT_BUFFER: begin
-            if (commit_count_zero) begin
+        // Wait for buffer to be armed
+        STATE_WAIT_BUFFER: begin
+            busy_next = 1'b1;
+            waiting_armed_buf_next = 1'b0;
+
+            dma_write_desc_valid_next = 1'b0;
+            head_slot_pop_valid_next = 1'b0;
+
+            if (stop_pulse_reg) begin
                 busy_next = 1'b0;
+                waiting_armed_buf_next = 1'b0;
+                stop_pending_next = 1'b0;
+
                 state_next = STATE_IDLE;
-            end else if (current_buf_armed) begin
-                state_next = STATE_WAIT_SLOT;
-            end else if (other_buf_armed) begin
-                current_buf_next = !current_buf_reg;
+            end else if (active_buf_ready) begin
+                // buffer is armed and has non-zero capacity, proceed to wait for slot
+                waiting_armed_buf_next = 1'b0;
                 state_next = STATE_WAIT_SLOT;
             end else begin
+                // buffer is not armed or has zero capacity, wait for it to be armed
                 waiting_armed_buf_next = 1'b1;
-                state_next = STATE_WAIT_ARMED_BUFFER;
             end
         end
 
+        // Wait for slot to be valid
         STATE_WAIT_SLOT: begin
+            busy_next = 1'b1;
             waiting_slot_next = 1'b1;
 
-            if (head_slot_valid) begin
+            if (stop_pulse_reg) begin
+                busy_next = 1'b0;
+                waiting_slot_next = 1'b0;
+                stop_pending_next = 1'b0;
+
+                state_next = STATE_IDLE;
+            end else if (!active_buf_ready) begin
+                // slot is valid, proceed to issue DMA write
+                waiting_slot_next = 1'b0;
+                state_next = STATE_WAIT_BUFFER;
+            end else if (head_slot_valid) begin
+                // slot is valid, proceed to issue DMA write
                 waiting_slot_next = 1'b0;
 
+                // launch a complete DMA write descriptor
                 dma_write_desc_dma_addr_next = commit_dma_dst_addr;
                 dma_write_desc_ram_sel_next = RAM_SEL_COMMIT_VALUE;
                 dma_write_desc_ram_addr_next = head_slot_addr;
-                dma_write_desc_imm_en_next = 1'b0;
                 dma_write_desc_len_next = head_slot_len;
                 dma_write_desc_tag_next = DMA_TAG_COMMIT_VALUE;
                 dma_write_desc_valid_next = 1'b1;
@@ -427,107 +540,232 @@ always @(*) begin
         end
 
         STATE_ISSUE_DMA: begin
-            if (dma_write_desc_valid_reg && m_axis_dma_write_desc_ready) begin
+            busy_next = 1'b1;
+
+            if (dma_write_desc_fire) begin
                 dma_write_desc_valid_next = 1'b0;
+
+                // The descriptor have been accepted. It can no longer
+                // be cancelled. A simultaneous stop becomes stop_pending.
+                if (stop_pulse_reg) begin
+                    stop_pending_next = 1'b1;
+                end
+
                 state_next = STATE_WAIT_DMA;
+            end else if (stop_pulse_reg) begin
+                // Descriptor has not been accepted yet, so it can
+                // be cancelled safely.
+                dma_write_desc_valid_next = 1'b0;
+                
+                busy_next = 1'b0;
+                stop_pending_next = 1'b0;
+
+                state_next = STATE_IDLE;
             end
         end
 
+        // Wait for DMA write completion
         STATE_WAIT_DMA: begin
+            busy_next = 1'b1;
+
+            if (stop_pulse_reg) begin
+                // DMA write is in progress, cannot be cancelled. Stop becomes pending.
+                stop_pending_next = 1'b1;
+            end
+
             if (dma_write_status_match) begin
+                // DMA write completed, check for error
                 if (dma_write_status_error) begin
-                    error_count_next = error_count_reg + 1;
+                    // DMA write failed. Do not pop the commit slot.
+                    if (active_buf_reg == 1'b0) begin
+                        buf0_error_count_next = buf0_error_count_reg + 1'b1;
+                    end else begin
+                        buf1_error_count_next = buf1_error_count_reg + 1'b1;
+                    end
+
                     busy_next = 1'b0;
+                    stop_pending_next = 1'b0;
                     state_next = STATE_IDLE;
                 end else begin
+                    // DMA write successful, increment completed count for active buffer
                     head_slot_pop_valid_next = 1'b1;
                     state_next = STATE_POP_SLOT;
                 end
             end
         end
 
+        // Pop the head slot after successful DMA write
         STATE_POP_SLOT: begin
-            if (head_slot_pop_valid_reg && head_slot_pop_ready) begin
+            busy_next = 1'b1;
+
+            if (stop_pulse_reg) begin
+                // DMA write is completed, but stop is requested. Stop becomes pending.
+                stop_pending_next = 1'b1;
+            end
+
+            if (head_slot_pop_fire) begin
                 head_slot_pop_valid_next = 1'b0;
 
-                if (current_buf_reg == 1'b0) begin
+                // Increment completed count for active buffer
+                if (active_buf_reg == 1'b0) begin
+                    // Buffer 0 completion
                     buf0_completed_count_next = buf0_completed_count_reg + 1'b1;
-                end else begin
-                    buf1_completed_count_next = buf1_completed_count_reg + 1'b1;
-                end
 
-                if (active_index_reg + 1 >= commit_count_reg) begin
-                    active_index_next = 32'd0;
+                    // Check if buffer 0 is now done
+                    if (buf0_completed_count_next >= commit_buf0_slot_capacity_reg) begin
+                        buf0_done_next = 1'b1;
+                        buf0_armed_next = 1'b0; // Disarm buffer 0
 
-                    if (current_buf_reg == 1'b0) begin
-                        buf_done_next[0] = 1'b1;
-                        buf_armed_next[0] = 1'b0;
+                        // strict ping-pong transition: buffer 0 -> buffer 1.
+                        // If buffer 1 is not armed, wait in STATE_WAIT_BUFFER.
+                        active_buf_next = 1'b1;
+
+                        if (stop_pending_reg || stop_pulse_reg) begin
+                            busy_next = 1'b0;
+                            stop_pending_next = 1'b0;
+                            state_next = STATE_IDLE;
+                        end else begin
+                            state_next = STATE_WAIT_BUFFER;
+                        end
                     end else begin
-                        buf_done_next[1] = 1'b1;
-                        buf_armed_next[1] = 1'b0;
+                        // Buffer 0 still has space. Continue writing it.
+                        if (stop_pending_reg || stop_pulse_reg) begin
+                            busy_next = 1'b0;
+                            stop_pending_next = 1'b0;
+                            state_next = STATE_IDLE;
+                        end else begin
+                            state_next = STATE_WAIT_SLOT;
+                        end
                     end
-
-                    current_buf_next = !current_buf_reg;
-                    state_next = STATE_SELECT_BUFFER;
                 end else begin
-                    active_index_next = active_index_reg + 1'b1;
-                    state_next = STATE_WAIT_SLOT;
+                    // Buffer 1 completion
+                    buf1_completed_count_next = buf1_completed_count_reg + 1'b1;
+
+                    if (buf1_completed_count_next >= commit_buf1_slot_capacity_reg) begin
+                        buf1_done_next = 1'b1;
+                        buf1_armed_next = 1'b0; // Disarm buffer 1
+
+                        // strict ping-pong transition: switch to buffer 0 if it is armed
+                        active_buf_next = 1'b0;
+
+                        if (stop_pending_reg || stop_pulse_reg) begin
+                            busy_next = 1'b0;
+                            stop_pending_next = 1'b0;
+                            state_next = STATE_IDLE;
+                        end else begin
+                            state_next = STATE_WAIT_BUFFER;
+                        end
+                    end else begin
+                        // Buffer 1 still has space. Continue writing it.
+                        if (stop_pending_reg || stop_pulse_reg) begin
+                            busy_next = 1'b0;
+                            stop_pending_next = 1'b0;
+                            state_next = STATE_IDLE;
+                        end else begin
+                            state_next = STATE_WAIT_SLOT;
+                        end
+                    end
                 end
             end
         end
+
+        default: begin
+            state_next = STATE_IDLE;
+
+            busy_next = 1'b0;
+            waiting_slot_next = 1'b0;
+            waiting_armed_buf_next = 1'b0;
+
+            stop_pending_next = 1'b0;
+
+            dma_write_desc_valid_next = 1'b0;
+            head_slot_pop_valid_next = 1'b0;
+        end
+
     endcase
-    
-    if (stop_cmd) begin
-        busy_next = 1'b0;
-        waiting_slot_next = 1'b0;
-        waiting_armed_buf_next = 1'b0;
-        dma_write_desc_valid_next = 1'b0;
-        head_slot_pop_valid_next = 1'b0;
-        state_next = STATE_IDLE;
-    end
 end
 
-// ======================================================================
-// Sequential logic
-// ======================================================================
+// ------------------------------------------------
+//              Sequential update logic
+// ------------------------------------------------
 always @(posedge clk) begin
     if (rst) begin
         state_reg <= STATE_IDLE;
 
         busy_reg <= 1'b0;
-        current_buf_reg <= 1'b0;
-        buf_armed_reg <= 2'b00;
-        buf_done_reg <= 2'b00;
-
-        active_index_reg <= 32'd0;
-        buf0_completed_count_reg <= 32'd0;
-        buf1_completed_count_reg <= 32'd0;
-        error_count_reg <= 32'd0;
+        active_buf_reg <= 1'b0;
 
         waiting_slot_reg <= 1'b0;
         waiting_armed_buf_reg <= 1'b0;
 
+        stop_pending_reg <= 1'b0;
+
+        // Buffer 0 runtime state
+        buf0_armed_reg <= 1'b0;
+        buf0_done_reg <= 1'b0;
+        buf0_completed_count_reg <= 32'd0;
+        buf0_error_count_reg <= 32'd0;
+
+        // Buffer 1 runtime state
+        buf1_armed_reg <= 1'b0;
+        buf1_done_reg <= 1'b0;
+        buf1_completed_count_reg <= 32'd0;
+        buf1_error_count_reg <= 32'd0;
+
+        // DMA descriptor
+        dma_write_desc_dma_addr_reg <= {DMA_ADDR_WIDTH{1'b0}};
+        dma_write_desc_ram_sel_reg <= {RAM_SEL_WIDTH{1'b0}};
+        dma_write_desc_ram_addr_reg <= {RAM_ADDR_WIDTH{1'b0}};
+        dma_write_desc_len_reg <= {DMA_LEN_WIDTH{1'b0}};
+        dma_write_desc_tag_reg <= {DMA_TAG_WIDTH{1'b0}};
         dma_write_desc_valid_reg <= 1'b0;
+
         head_slot_pop_valid_reg <= 1'b0;
     end else begin
         state_reg <= state_next;
 
         busy_reg <= busy_next;
-        current_buf_reg <= current_buf_next;
-        buf_armed_reg <= buf_armed_next;
-        buf_done_reg <= buf_done_next;
-
-        active_index_reg <= active_index_next;
-        buf0_completed_count_reg <= buf0_completed_count_next;
-        buf1_completed_count_reg <= buf1_completed_count_next;
-        error_count_reg <= error_count_next;
+        active_buf_reg <= active_buf_next;
 
         waiting_slot_reg <= waiting_slot_next;
         waiting_armed_buf_reg <= waiting_armed_buf_next;
 
+        stop_pending_reg <= stop_pending_next;
+
+        // Buffer 0 runtime state
+        buf0_armed_reg <= buf0_armed_next;
+        buf0_done_reg <= buf0_done_next;
+        buf0_completed_count_reg <= buf0_completed_count_next;
+        buf0_error_count_reg <= buf0_error_count_next;
+
+        // Buffer 1 runtime state
+        buf1_armed_reg <= buf1_armed_next;
+        buf1_done_reg <= buf1_done_next;
+        buf1_completed_count_reg <= buf1_completed_count_next;
+        buf1_error_count_reg <= buf1_error_count_next;
+
+        // DMA descriptor
+        dma_write_desc_dma_addr_reg <= dma_write_desc_dma_addr_next;
+        dma_write_desc_ram_sel_reg <= dma_write_desc_ram_sel_next;
+        dma_write_desc_ram_addr_reg <= dma_write_desc_ram_addr_next;
+        dma_write_desc_len_reg <= dma_write_desc_len_next;
+        dma_write_desc_tag_reg <= dma_write_desc_tag_next;
         dma_write_desc_valid_reg <= dma_write_desc_valid_next;
+
+        // commit_buf slot pop
         head_slot_pop_valid_reg <= head_slot_pop_valid_next;
     end
 end
+
+// output assignments
+assign m_axis_dma_write_desc_dma_addr = dma_write_desc_dma_addr_reg;
+assign m_axis_dma_write_desc_ram_sel = dma_write_desc_ram_sel_reg;
+assign m_axis_dma_write_desc_ram_addr = dma_write_desc_ram_addr_reg;
+assign m_axis_dma_write_desc_imm = {DMA_IMM_WIDTH{1'b0}}; // not used in this module
+assign m_axis_dma_write_desc_imm_en = 1'b0; // not used in this module
+assign m_axis_dma_write_desc_len = dma_write_desc_len_reg;
+assign m_axis_dma_write_desc_tag = dma_write_desc_tag_reg;
+assign m_axis_dma_write_desc_valid = dma_write_desc_valid_reg;
+assign head_slot_pop_valid = head_slot_pop_valid_reg;
 
 endmodule
