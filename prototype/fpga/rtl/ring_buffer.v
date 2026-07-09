@@ -26,8 +26,6 @@ module ring_buffer
             wr_ptr <= 0;
             rd_ptr <= 0;
             count <= 0;
-            full <= 1'b0;
-            empty <= 1'b1;
         end else begin
             if (wr_en && !full) begin
                 buffer[wr_ptr] <= wr_data;

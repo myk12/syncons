@@ -37,30 +37,30 @@ module consensus_rx_splitter #(
     input  wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           s_axis_if_rx_tdata,
     input  wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           s_axis_if_rx_tkeep,
     input  wire [IF_COUNT-1:0]                              s_axis_if_rx_tvalid,
-    output wire [IF_COUNT-1:0]                              s_axis_if_rx_tready,
+    output reg [IF_COUNT-1:0]                               s_axis_if_rx_tready,
     input  wire [IF_COUNT-1:0]                              s_axis_if_rx_tlast,
     input  wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          s_axis_if_rx_tid,
     input  wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        s_axis_if_rx_tdest,
     input  wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        s_axis_if_rx_tuser,
 
     // RX interface (from DMA to MAC) from rx splitter to host DMA
-    output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_dma_rx_tdata,
-    output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_dma_rx_tkeep,
-    output wire [IF_COUNT-1:0]                              m_axis_dma_rx_tvalid,
+    output reg [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]            m_axis_dma_rx_tdata,
+    output reg [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]            m_axis_dma_rx_tkeep,
+    output reg [IF_COUNT-1:0]                               m_axis_dma_rx_tvalid,
     input  wire [IF_COUNT-1:0]                              m_axis_dma_rx_tready,
-    output wire [IF_COUNT-1:0]                              m_axis_dma_rx_tlast,
-    output wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          m_axis_dma_rx_tid,
-    output wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        m_axis_dma_rx_tdest,
-    output wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        m_axis_dma_rx_tuser,
+    output reg [IF_COUNT-1:0]                               m_axis_dma_rx_tlast,
+    output reg [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]           m_axis_dma_rx_tid,
+    output reg [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]         m_axis_dma_rx_tdest,
+    output reg [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]         m_axis_dma_rx_tuser,
 
-    output wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           m_axis_cons_rx_tdata,
-    output wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           m_axis_cons_rx_tkeep,
-    output wire [IF_COUNT-1:0]                              m_axis_cons_rx_tvalid,
+    output reg [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]            m_axis_cons_rx_tdata,
+    output reg [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]            m_axis_cons_rx_tkeep,
+    output reg [IF_COUNT-1:0]                               m_axis_cons_rx_tvalid,
     input  wire [IF_COUNT-1:0]                              m_axis_cons_rx_tready,
-    output wire [IF_COUNT-1:0]                              m_axis_cons_rx_tlast,
-    output wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          m_axis_cons_rx_tid,
-    output wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        m_axis_cons_rx_tdest,
-    output wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        m_axis_cons_rx_tuser
+    output reg [IF_COUNT-1:0]                               m_axis_cons_rx_tlast,
+    output reg [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]           m_axis_cons_rx_tid,
+    output reg [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]         m_axis_cons_rx_tdest,
+    output reg [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]         m_axis_cons_rx_tuser
 );
 
 localparam [1:0] RX_ROUTE_DROP = 2'd0;
@@ -76,16 +76,21 @@ wire [1:0] rx_route_eff = (consensus_ethertype_match ? RX_ROUTE_CONS : (dma_ethe
 
 
 always @(*) begin
-    m_axis_cons_rx_tdata  = {AXIS_DATA_WIDTH{1'b0}};
-    m_axis_cons_rx_tkeep  = {AXIS_KEEP_WIDTH{1'b0}};
+    m_axis_cons_rx_tdata  = {AXIS_IF_DATA_WIDTH{1'b0}};
+    m_axis_cons_rx_tkeep  = {AXIS_IF_KEEP_WIDTH{1'b0}};
     m_axis_cons_rx_tvalid = 1'b0;
     m_axis_cons_rx_tlast  = 1'b0;
-    m_axis_cons_rx_tuser  = {AXIS_RX_USER_WIDTH{1'b0}};
-    m_axis_dma_rx_tdata   = {AXIS_DATA_WIDTH{1'b0}};
-    m_axis_dma_rx_tkeep   = {AXIS_KEEP_WIDTH{1'b0'}};
+    m_axis_cons_rx_tuser  = {AXIS_IF_RX_USER_WIDTH{1'b0}};
+    m_axis_cons_rx_tid    = {AXIS_IF_RX_ID_WIDTH{1'b0}};
+    m_axis_cons_rx_tdest  = {AXIS_IF_RX_DEST_WIDTH{1'b0}};
+
+    m_axis_dma_rx_tdata   = {AXIS_IF_DATA_WIDTH{1'b0}};
+    m_axis_dma_rx_tkeep   = {AXIS_IF_KEEP_WIDTH{1'b0}};
     m_axis_dma_rx_tvalid  = 1'b0;
     m_axis_dma_rx_tlast   = 1'b0;
-    m_axis_dma_rx_tuser   = {AXIS_RX_USER_WIDTH{1'b0}};
+    m_axis_dma_rx_tuser   = {AXIS_IF_RX_USER_WIDTH{1'b0}};
+    m_axis_dma_rx_tid     = {AXIS_IF_RX_ID_WIDTH{1'b0}};
+    m_axis_dma_rx_tdest   = {AXIS_IF_RX_DEST_WIDTH{1'b0}};
 
     s_axis_if_rx_tready  = 1'b1;
 
@@ -97,6 +102,8 @@ always @(*) begin
                 m_axis_cons_rx_tvalid   = s_axis_if_rx_tvalid;
                 m_axis_cons_rx_tlast    = s_axis_if_rx_tlast;
                 m_axis_cons_rx_tuser    = s_axis_if_rx_tuser;
+                m_axis_cons_rx_tid      = s_axis_if_rx_tid;
+                m_axis_cons_rx_tdest    = s_axis_if_rx_tdest;
                 s_axis_if_rx_tready     = m_axis_cons_rx_tready;
             end
         end
@@ -107,6 +114,8 @@ always @(*) begin
                 m_axis_dma_rx_tvalid   = s_axis_if_rx_tvalid;
                 m_axis_dma_rx_tlast    = s_axis_if_rx_tlast;
                 m_axis_dma_rx_tuser    = s_axis_if_rx_tuser;
+                m_axis_dma_rx_tid      = s_axis_if_rx_tid;
+                m_axis_dma_rx_tdest    = s_axis_if_rx_tdest;
                 s_axis_if_rx_tready    = m_axis_dma_rx_tready;
             end
         end

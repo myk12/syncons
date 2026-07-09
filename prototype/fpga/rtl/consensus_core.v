@@ -17,7 +17,6 @@ module consensus_core #(
     parameter P_LOG_ITEM_LEN = 32,   // in bytes
     parameter P_DATA_WIDTH = 512,
     parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8,
-    parameter P_MEMBERSHIP_EPOCH_WIDTH = 64, // will change
     parameter P_SYS_CLOCK_FREQ_HZ = 250_000_000,  // 250 MHz
     parameter P_SLOT_DURATION_NS = 4000,  // 4 microseconds
     parameter P_GUARD_NS = 50,          // 50 nanoseconds
@@ -41,7 +40,6 @@ module consensus_core #(
     input wire [63:0]                           i_rx_round_id,
 
     // control plane
-    input wire [P_MEMBERSHIP_EPOCH_WIDTH-1:0]   i_ctrl_membership_epoch,
     input wire [63:0]                           i_ctrl_run_id,
     input wire [P_NODE_COUNT-1:0]               i_ctrl_membership, // bitmap of current membership
     input wire                                  i_ctrl_activate, // signal to activate the consensus core (e.g., after configuration)
@@ -71,14 +69,12 @@ module consensus_core #(
 // current stage
 reg [63:0]                          s_curr_round_id;
 reg [P_NODE_COUNT-1:0]              s_curr_installed_membership;
-reg [P_MEMBERSHIP_EPOCH_WIDTH-1:0]  s_curr_membership_epoch;
 reg [P_NODE_COUNT-1:0]              s_curr_sound_bitmap;
 // reg [P_LOG_ITEM_LEN*8-1:0]          s_curr_proposals [0:P_NODE_COUNT-1];
 
 // evidence stage
 reg [63:0]                          s_evidence_round_id;
 reg [P_NODE_COUNT-1:0]              s_evidence_installed_membership;
-reg [P_MEMBERSHIP_EPOCH_WIDTH-1:0]  s_evidence_membership_epoch;
 reg [P_NODE_COUNT-1:0]              s_evidence_sound_bitmap;
 // reg [P_LOG_ITEM_LEN*8-1:0]          s_evidence_proposals [0:P_NODE_COUNT-1];
 reg [P_NODE_COUNT-1:0]              s_evidence_sound_matrix [0:P_NODE_COUNT-1];
@@ -86,7 +82,6 @@ reg [P_NODE_COUNT-1:0]              s_evidence_sound_matrix [0:P_NODE_COUNT-1];
 // commit stage
 reg [63:0]                          s_commit_round_id;
 reg [P_NODE_COUNT-1:0]              s_commit_installed_membership;
-reg [P_MEMBERSHIP_EPOCH_WIDTH-1:0]  s_commit_membership_epoch;
 reg [P_NODE_COUNT-1:0]              s_commit_sound_bitmap;
 // reg [P_LOG_ITEM_LEN*8-1:0]          s_commit_proposals [0:P_NODE_COUNT-1];
 reg [P_NODE_COUNT-1:0]              s_commit_sound_matrix [0:P_NODE_COUNT-1];
@@ -266,7 +261,6 @@ always @(posedge clk) begin
     if (rst) begin
         s_curr_round_id <= 0;
         s_curr_installed_membership <= 0;
-        s_curr_membership_epoch <= 0;
         s_curr_sound_bitmap <= 0;
         // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
         //     s_curr_proposals[i] <= 0;
@@ -274,7 +268,6 @@ always @(posedge clk) begin
 
         s_evidence_round_id <= 0;
         s_evidence_installed_membership <= 0;
-        s_evidence_membership_epoch <= 0;
         s_evidence_sound_bitmap <= 0;
         // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
         //     s_evidence_proposals[i] <= 0;
@@ -285,7 +278,6 @@ always @(posedge clk) begin
         
         s_commit_round_id <= 0;
         s_commit_installed_membership <= 0;
-        s_commit_membership_epoch <= 0;
         s_commit_sound_bitmap <= 0;
         // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
         //     s_commit_proposals[i] <= 0;
@@ -316,7 +308,6 @@ always @(posedge clk) begin
                 if ((activation_pending || i_ctrl_activate) && round_boundary) begin
                     s_curr_round_id             <= current_round_id;
                     s_curr_installed_membership <= i_ctrl_membership;
-                    s_curr_membership_epoch     <= i_ctrl_membership_epoch;
                     s_curr_sound_bitmap         <= 1 << P_NODE_ID;
                     // s_curr_proposals[P_NODE_ID] <= i_ctrl_host_payload;
                     
@@ -332,7 +323,6 @@ always @(posedge clk) begin
                     s_curr_round_id <= 0;
 
                     s_curr_installed_membership <= 0;
-                    s_curr_membership_epoch <= 0;
                     s_curr_sound_bitmap <= 0;
                     // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                     //     s_curr_proposals[i] <= 0;
@@ -340,7 +330,6 @@ always @(posedge clk) begin
 
                     s_evidence_round_id <= 0;
                     s_evidence_installed_membership <= 0;
-                    s_evidence_membership_epoch <= 0;
                     s_evidence_sound_bitmap <= 0;
                     // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                     //     s_evidence_proposals[i] <= 0;
@@ -351,7 +340,6 @@ always @(posedge clk) begin
 
                     s_commit_round_id <= 0;
                     s_commit_installed_membership <= 0;
-                    s_commit_membership_epoch <= 0;
                     s_commit_sound_bitmap <= 0;
                     // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                     //     s_commit_proposals[i] <= 0;
@@ -375,7 +363,6 @@ always @(posedge clk) begin
                     
                     s_commit_round_id <= s_evidence_round_id;
                     s_commit_installed_membership <= s_evidence_installed_membership;
-                    s_commit_membership_epoch <= s_evidence_membership_epoch;
                     s_commit_sound_bitmap <= s_evidence_sound_bitmap;
                     // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                     //     s_commit_proposals[i] <= s_evidence_proposals[i];
@@ -386,7 +373,6 @@ always @(posedge clk) begin
                     
                     s_evidence_round_id <= s_curr_round_id;
                     s_evidence_installed_membership <= s_curr_installed_membership;
-                    s_evidence_membership_epoch <= s_curr_membership_epoch;
                     s_evidence_sound_bitmap <= f_derived_sound_set;
                     // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                     //     s_evidence_proposals[i] <= s_curr_proposals[i];
@@ -430,7 +416,6 @@ always @(posedge clk) begin
 
                 s_curr_round_id <= 0;
                 s_curr_installed_membership <= 0;
-                s_curr_membership_epoch <= 0;
                 s_curr_sound_bitmap <= 0;
                 // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                 //     s_curr_proposals[i] <= 0;
@@ -438,7 +423,6 @@ always @(posedge clk) begin
 
                 s_evidence_round_id <= 0;
                 s_evidence_installed_membership <= 0;
-                s_evidence_membership_epoch <= 0;
                 s_evidence_sound_bitmap <= 0;
                 // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                 //     s_evidence_proposals[i] <= 0;
@@ -449,7 +433,6 @@ always @(posedge clk) begin
 
                 s_commit_round_id <= 0;
                 s_commit_installed_membership <= 0;
-                s_commit_membership_epoch <= 0;
                 s_commit_sound_bitmap <= 0;
                 // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                 //     s_commit_proposals[i] <= 0;

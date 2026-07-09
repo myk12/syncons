@@ -88,26 +88,26 @@ end
 //  - Slot ID (64 bits)
 //  - Node ID (8 bits)
 //  - Knowledge Vector (8 bits)
-//  - Payload (40 bytes)
+//  - Payload (32 bytes)
 
 reg [P_DATA_WIDTH-1:0]      v_packet_flit;
 always @(*) begin
     v_packet_flit = {P_DATA_WIDTH{1'b0}};
 
     // ------- Ethernet Header -------
-    v_packet_flit[0*8:0]       = v_dest_mac[47:40];
-    v_packet_flit[1*8:8]       = v_dest_mac[39:32];
-    v_packet_flit[2*8:16]      = v_dest_mac[31:24];
-    v_packet_flit[3*8:24]      = v_dest_mac[23:16];
-    v_packet_flit[4*8:32]      = v_dest_mac[15:8];
-    v_packet_flit[5*8:40]      = v_dest_mac[7:0];
+    v_packet_flit[7:0]       = v_dest_mac[47:40];
+    v_packet_flit[15:8]       = v_dest_mac[39:32];
+    v_packet_flit[23:16]      = v_dest_mac[31:24];
+    v_packet_flit[31:24]      = v_dest_mac[23:16];
+    v_packet_flit[39:32]      = v_dest_mac[15:8];
+    v_packet_flit[47:40]      = v_dest_mac[7:0];
 
-    v_packet_flit[6*8:48]      = P_SRC_MAC[47:40];
-    v_packet_flit[7*8:56]      = P_SRC_MAC[39:32];
-    v_packet_flit[8*8:64]      = P_SRC_MAC[31:24];
-    v_packet_flit[9*8:72]      = P_SRC_MAC[23:16];
-    v_packet_flit[10*8:80]     = P_SRC_MAC[15:8];
-    v_packet_flit[11*8:88]     = P_SRC_MAC[7:0];
+    v_packet_flit[55:48]      = P_SRC_MAC[47:40];
+    v_packet_flit[63:56]      = P_SRC_MAC[39:32];
+    v_packet_flit[71:64]      = P_SRC_MAC[31:24];
+    v_packet_flit[79:72]      = P_SRC_MAC[23:16];
+    v_packet_flit[87:80]     = P_SRC_MAC[15:8];
+    v_packet_flit[95:88]     = P_SRC_MAC[7:0];
 
     v_packet_flit[12*8 +: 16] = to_big_endian_16(P_ETHERNET_TYPE);
 

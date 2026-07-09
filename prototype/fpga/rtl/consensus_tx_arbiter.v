@@ -5,7 +5,10 @@ module consensus_tx_arbiter #(
     parameter integer AXIS_KEEP_WIDTH = AXIS_DATA_WIDTH/8,
     parameter integer AXIS_TX_USER_WIDTH = 1,
     parameter integer AXIS_IF_TX_ID_WIDTH = 12,
-    parameter integer AXIS_IF_TX_DEST_WIDTH = 4
+    parameter integer AXIS_IF_TX_DEST_WIDTH = 4,
+    parameter PTP_TS_FMT_TOD    = 1,
+    parameter PTP_TS_WIDTH      = PTP_TS_FMT_TOD ? 96 : 64,
+    parameter TX_TAG_WIDTH      = 16 
 ) (
     input  wire [AXIS_DATA_WIDTH-1:0]           s_axis_cons_tx_tdata,
     input  wire [AXIS_KEEP_WIDTH-1:0]           s_axis_cons_tx_tkeep,
@@ -26,16 +29,16 @@ module consensus_tx_arbiter #(
     output reg                                  s_axis_dma_tx_tready,
 
     // TX CPL from MAC
-    input  wire [IF_COUNT*PTP_TS_WIDTH-1:0]                 s_axis_tx_cpl_ts,
-    input  wire [IF_COUNT*TX_TAG_WIDTH-1:0]                 s_axis_tx_cpl_tag,
-    input  wire [IF_COUNT-1:0]                              s_axis_tx_cpl_valid,
-    output wire [IF_COUNT-1:0]                              s_axis_tx_cpl_ready,
+    input  wire [PTP_TS_WIDTH-1:0]              s_axis_tx_cpl_ts,
+    input  wire [TX_TAG_WIDTH-1:0]              s_axis_tx_cpl_tag,
+    input  wire                                 s_axis_tx_cpl_valid,
+    output wire                                 s_axis_tx_cpl_ready,
 
     // TX CPL to DMA
-    output wire [IF_COUNT*PTP_TS_WIDTH-1:0]                 m_axis_tx_cpl_ts,
-    output wire [IF_COUNT*TX_TAG_WIDTH-1:0]                 m_axis_tx_cpl_tag,
-    output wire [IF_COUNT-1:0]                              m_axis_tx_cpl_valid,
-    input  wire [IF_COUNT-1:0]                              m_axis_tx_cpl_ready,
+    output wire [PTP_TS_WIDTH-1:0]              m_axis_tx_cpl_ts,
+    output wire [TX_TAG_WIDTH-1:0]              m_axis_tx_cpl_tag,
+    output wire                                 m_axis_tx_cpl_valid,
+    input  wire                                 m_axis_tx_cpl_ready,
 
     output reg  [AXIS_DATA_WIDTH-1:0]           m_axis_tx_tdata,
     output reg  [AXIS_KEEP_WIDTH-1:0]           m_axis_tx_tkeep,
@@ -43,8 +46,8 @@ module consensus_tx_arbiter #(
     output reg                                  m_axis_tx_tlast,
     output reg  [AXIS_TX_USER_WIDTH-1:0]        m_axis_tx_tuser,
     input  wire                                 m_axis_tx_tready,
-    output wire [AXIS_IF_TX_ID_WIDTH-1:0]       m_axis_tx_tid,
-    output wire [AXIS_IF_TX_DEST_WIDTH-1:0]     m_axis_tx_tdest
+    output reg [AXIS_IF_TX_ID_WIDTH-1:0]        m_axis_tx_tid,
+    output reg [AXIS_IF_TX_DEST_WIDTH-1:0]      m_axis_tx_tdest
 );
 
 

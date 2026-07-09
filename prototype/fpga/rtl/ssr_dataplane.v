@@ -121,7 +121,10 @@ module ssr_dataplane #
     parameter P_MEMBERSHIP_EPOCH_WIDTH = 64,
     parameter P_SYS_CLOCK_FREQ_HZ = 250_000_000,
     parameter P_SLOT_DURATION_NS = 4000,
-    parameter P_GUARD_NS = 50;
+    parameter P_GUARD_NS = 50,
+    parameter P_DATA_WIDTH = 512,
+    parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8,
+    parameter P_ETHERNET_TYPE = 16'h88B5
 )
 (
     input  wire                                     clk,
@@ -335,17 +338,22 @@ assign reg_wr_ack_common = reg_wr_ack_common_reg;
 assign reg_rd_ack_common = reg_rd_ack_common_reg;
 assign reg_rd_data_common = reg_rd_data_common_reg;
 
+assign reg_wr_ack_consensus = reg_wr_ack_consensus_reg;
+assign reg_rd_ack_consensus = reg_rd_ack_consensus_reg;
+assign reg_rd_data_consensus = reg_rd_data_consensus_reg;
+
 assign reg_wr_wait_common = 0;
 assign reg_rd_wait_common = 0;
 
 // selecting which block's acknowledge and data signals to return based on the accessed address
 assign reg_wr_wait  = 0; // this module can always accept write commands (no wait states)
 assign reg_rd_wait  = 0; // this module can always accept read commands (no wait states)
-assign reg_wr_ack   = reg_wr_ack_common || reg_wr_ack_proposal_queue || reg_wr_ack_commit_queue; // acknowledge if any of the blocks acknowledges
-assign reg_rd_ack   = reg_rd_ack_common || reg_rd_ack_proposal_queue || reg_rd_ack_commit_queue; // acknowledge if any of the blocks acknowledges
+assign reg_wr_ack   = reg_wr_ack_common || reg_wr_ack_proposal_queue || reg_wr_ack_commit_queue || reg_wr_ack_consensus; // acknowledge if any of the blocks acknowledges
+assign reg_rd_ack   = reg_rd_ack_common || reg_rd_ack_proposal_queue || reg_rd_ack_commit_queue || reg_rd_ack_consensus; // acknowledge if any of the blocks acknowledges
 assign reg_rd_data  = reg_rd_ack_common ? reg_rd_data_common : 
                     reg_rd_ack_proposal_queue ? reg_rd_data_proposal_queue : 
-                    reg_rd_ack_commit_queue ? reg_rd_data_commit_queue : {REG_DATA_WIDTH{1'b0}}; // return data from the appropriate block based on which one acknowledges
+                    reg_rd_ack_commit_queue ? reg_rd_data_commit_queue : 
+                    reg_rd_ack_consensus ? reg_rd_data_consensus : {REG_DATA_WIDTH{1'b0}}; // return data from the appropriate block based on which one acknowledges
 
 // control/status registers
 reg [31:0] control_reg, control_reg_next;
@@ -359,6 +367,12 @@ reg [31:0] replica_num_reg, replica_num_reg_next;
 reg [31:0] round_length_ns_reg, round_length_ns_reg_next;
 reg [31:0] ethernet_port_reg, ethernet_port_reg_next;
 
+reg global_enable_reg, global_enable_reg_next;
+reg [31:0] ctrl_run_id_reg, ctrl_run_id_reg_next;
+reg [31:0] ctrl_membership_reg, ctrl_membership_reg_next;
+reg ctrl_activate_reg, ctrl_activate_reg_next;
+reg ctrl_reboot_reg, ctrl_reboot_reg_next;
+
 // replica MAC table (up to MAX_REPLICAS entries)
 reg [31:0] replica_mac_lo [0:MAX_REPLICAS-1], replica_mac_lo_next [0:MAX_REPLICAS-1];
 reg [31:0] replica_mac_hi [0:MAX_REPLICAS-1], replica_mac_hi_next [0:MAX_REPLICAS-1];
@@ -367,6 +381,69 @@ wire config_valid = replica_num_reg != 0 &&
                     replica_num_reg <= MAX_REPLICAS &&
                     round_length_ns_reg != 0 &&
                     replica_id_reg < replica_num_reg;
+
+// --------------------------------------------------------------
+//                 Tx Modules
+// --------------------------------------------------------------
+
+wire                            tx_rbuffer_wr_en;
+wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_wr_data;
+wire                            tx_rbuffer_rd_en;
+wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_rd_data;
+wire                            tx_rbuffer_empty;
+wire                            tx_rbuffer_full;
+wire                            tx_start;
+wire                            tx_allowed;
+wire [P_LOG_ITEM_LEN-1:0]       tx_propose;
+wire [P_NODE_COUNT-1:0]         tx_knowledge_vec;
+
+wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_tx_tdata;
+wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           axis_cons_tx_tkeep;
+wire [IF_COUNT-1:0]                              axis_cons_tx_tvalid;
+wire [IF_COUNT-1:0]                              axis_cons_tx_tready;
+wire [IF_COUNT-1:0]                              axis_cons_tx_tlast;
+wire [IF_COUNT*AXIS_IF_TX_ID_WIDTH-1:0]          axis_cons_tx_tid;
+wire [IF_COUNT*AXIS_IF_TX_DEST_WIDTH-1:0]        axis_cons_tx_tdest;
+wire [IF_COUNT*AXIS_IF_TX_USER_WIDTH-1:0]        axis_cons_tx_tuser;
+
+// --------------------------------------------------------------
+//                 Rx Modules
+// --------------------------------------------------------------
+wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_rx_tdata;
+wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           axis_cons_rx_tkeep;
+wire [IF_COUNT-1:0]                              axis_cons_rx_tvalid;
+wire [IF_COUNT-1:0]                              axis_cons_rx_tready;
+wire [IF_COUNT-1:0]                              axis_cons_rx_tlast;
+wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          axis_cons_rx_tid;
+wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        axis_cons_rx_tdest;
+wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        axis_cons_rx_tuser;
+
+wire rx_enabled;
+wire [P_NODE_ID-1:0] rx_node_id;
+wire [P_NODE_COUNT-1:0] rx_sound_bitmap;
+wire [P_LOG_ITEM_LEN-1:0] rx_payload;
+wire [P_LOG_ITEM_LEN-1:0] rx_run_id;
+wire [P_LOG_ITEM_LEN-1:0] rx_round_id;
+
+wire                            rx_rbuffer_wr_en;
+wire [AXIS_IF_DATA_WIDTH-1:0]   rx_rbuffer_wr_data;
+wire                            rx_rbuffer_rd_en;
+wire [AXIS_IF_DATA_WIDTH-1:0]   rx_rbuffer_rd_data;
+wire                            rx_rbuffer_empty;
+wire                            rx_rbuffer_full;
+wire                            rx_valid;
+
+// --------------------------------------------------------------
+//                 Consensus Core
+// --------------------------------------------------------------
+
+wire [63:0] current_run_id;
+wire [63:0] current_round_id;
+wire [63:0] current_slot_id;
+
+wire system_halt;
+
+assign current_slot_id = current_round_id;
 
 // --------------------------------------------------------------
 //                  Register block logic
@@ -494,12 +571,57 @@ always @* begin
     end
 end
 
+
+// consensus enable logic
+always @* begin
+    reg_wr_ack_consensus_next     = 1'b0; 
+    reg_rd_data_consensus_next    = 0;
+    reg_rd_ack_consensus_next     = 1'b0;
+
+if (reg_wr_en_consensus && !reg_wr_ack_consensus_reg) begin
+        // write operation - decode address and update registers
+        reg_wr_ack_consensus_next = 1'b1; // acknowledge the write
+        case ({reg_wr_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
+            RBB_CONSENSUS + 12'h000: ; // none, halt signal
+            RBB_CONSENSUS + 12'h004: global_enable_reg_next = reg_wr_data[0]; // global enable
+            RBB_CONSENSUS + 12'h008: ctrl_run_id_reg_next = reg_wr_data; // run id
+            RBB_CONSENSUS + 12'h00c: ctrl_membership_reg_next = reg_wr_data; // membership
+            RBB_CONSENSUS + 12'h010: ctrl_activate_reg_next = reg_wr_data[0]; // activate
+            RBB_CONSENSUS + 12'h014: ctrl_reboot_reg_next = reg_wr_data[0]; // reboot
+            default: reg_wr_ack_consensus_next = 1'b0; // invalid address, do not acknowledge
+        endcase
+    end
+
+    if (reg_rd_en_consensus && !reg_rd_ack_consensus_reg) begin
+        // read operation - decode address and return data
+        reg_rd_ack_consensus_next = 1'b1; // acknowledge the read
+        case ({reg_rd_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
+            RBB_CONSENSUS + 12'h000: reg_rd_data_consensus_next = system_halt;
+            RBB_CONSENSUS + 12'h004: reg_rd_data_consensus_next = global_enable_reg; // global enable
+            RBB_CONSENSUS + 12'h008: reg_rd_data_consensus_next = ctrl_run_id_reg; // run id
+            RBB_CONSENSUS + 12'h00c: reg_rd_data_consensus_next = ctrl_membership_reg; // membership
+            RBB_CONSENSUS + 12'h010: reg_rd_data_consensus_next = ctrl_activate_reg; // activate
+            RBB_CONSENSUS + 12'h014: reg_rd_data_consensus_next = ctrl_reboot_reg; // reboot
+            default: begin
+                reg_rd_data_consensus_next = 0; // invalid address, return 0
+                reg_rd_ack_consensus_next = 1'b0; // do not acknowledge
+            end
+        endcase
+    end
+
+
+end
+
 // sequential logic to update registers on clock edge
 always @(posedge clk) begin
     if (rst) begin
         reg_wr_ack_common_reg  <= 1'b0;
         reg_rd_data_common_reg <= 0;
         reg_rd_ack_common_reg  <= 1'b0;
+
+        reg_wr_ack_consensus_reg  <= 1'b0;
+        reg_rd_data_consensus_reg <= 0;
+        reg_rd_ack_consensus_reg  <= 1'b0;
 
         control_reg     <= 0;
         //status_reg <= 0;
@@ -510,6 +632,12 @@ always @(posedge clk) begin
         round_length_ns_reg <= 0;
         ethernet_port_reg   <= 0;
 
+        global_enable_reg <= 0;
+        ctrl_run_id_reg <= 0;
+        ctrl_membership_reg <= 0;
+        ctrl_activate_reg <= 0;
+        ctrl_reboot_reg <= 0;
+
         for (i = 0; i < MAX_REPLICAS; i = i + 1) begin
             replica_mac_lo[i] <= 0;
             replica_mac_hi[i] <= 0;
@@ -519,6 +647,10 @@ always @(posedge clk) begin
         reg_rd_data_common_reg <= reg_rd_data_common_next;
         reg_rd_ack_common_reg  <= reg_rd_ack_common_next;
 
+        reg_wr_ack_consensus_reg  <= reg_wr_ack_consensus_next;
+        reg_rd_data_consensus_reg <= reg_rd_data_consensus_next;
+        reg_rd_ack_consensus_reg  <= reg_rd_ack_consensus_next; 
+
         control_reg     <= control_reg_next;
         //status_reg <= status_reg_next;
         error_reg       <= error_reg_next;
@@ -527,6 +659,12 @@ always @(posedge clk) begin
         replica_num_reg <= replica_num_reg_next;
         round_length_ns_reg <= round_length_ns_reg_next;
         ethernet_port_reg   <= ethernet_port_reg_next;
+
+        global_enable_reg <= global_enable_reg_next;
+        ctrl_run_id_reg <= ctrl_run_id_reg_next;
+        ctrl_membership_reg <= ctrl_membership_reg_next;
+        ctrl_activate_reg <= ctrl_activate_reg_next;
+        ctrl_reboot_reg <= ctrl_reboot_reg_next;
 
         for (i = 0; i < MAX_REPLICAS; i = i + 1) begin
             replica_mac_lo[i] <= replica_mac_lo_next[i];
@@ -668,56 +806,8 @@ commit_queue_inst (
 );
 
 // --------------------------------------------------------------
-//                 Ethernet interface modules
-// --------------------------------------------------------------
-// direct through 
-// assign m_axis_if_tx_tdata = s_axis_if_tx_tdata;
-// assign m_axis_if_tx_tkeep = s_axis_if_tx_tkeep;
-// assign m_axis_if_tx_tvalid = s_axis_if_tx_tvalid;
-// assign s_axis_if_tx_tready = m_axis_if_tx_tready;
-// assign m_axis_if_tx_tlast = s_axis_if_tx_tlast;
-// assign m_axis_if_tx_tid = s_axis_if_tx_tid;
-// assign m_axis_if_tx_tdest = s_axis_if_tx_tdest;
-// assign m_axis_if_tx_tuser = s_axis_if_tx_tuser;
-
-// assign m_axis_if_tx_cpl_ts = s_axis_if_tx_cpl_ts;
-// assign m_axis_if_tx_cpl_tag = s_axis_if_tx_cpl_tag;
-// assign m_axis_if_tx_cpl_valid = s_axis_if_tx_cpl_valid;
-// assign s_axis_if_tx_cpl_ready = m_axis_if_tx_cpl_ready;
-
-// assign m_axis_if_rx_tdata = s_axis_if_rx_tdata;
-// assign m_axis_if_rx_tkeep = s_axis_if_rx_tkeep;
-// assign m_axis_if_rx_tvalid = s_axis_if_rx_tvalid;
-// assign s_axis_if_rx_tready = m_axis_if_rx_tready;
-// assign m_axis_if_rx_tlast = s_axis_if_rx_tlast;
-// assign m_axis_if_rx_tid = s_axis_if_rx_tid;
-// assign m_axis_if_rx_tdest = s_axis_if_rx_tdest;
-// assign m_axis_if_rx_tuser = s_axis_if_rx_tuser;
-
-// --------------------------------------------------------------
 //                 Tx Modules
 // --------------------------------------------------------------
-wire                            tx_rbuffer_wr_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_wr_data;
-wire                            tx_rbuffer_rd_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_rd_data;
-wire                            tx_rbuffer_empty;
-wire                            tx_rbuffer_full;
-wire                            tx_start;
-wire                            tx_allowed;
-wire [P_LOG_ITEM_LEN-1:0]       tx_propose;
-wire [P_NODE_COUNT-1:0]         tx_knowledge_vec;
-
-wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_tx_tdata;
-wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           axis_cons_tx_tkeep;
-wire [IF_COUNT-1:0]                              axis_cons_tx_tvalid;
-wire [IF_COUNT-1:0]                              axis_cons_tx_tready;
-wire [IF_COUNT-1:0]                              axis_cons_tx_tlast;
-wire [IF_COUNT*AXIS_IF_TX_ID_WIDTH-1:0]          axis_cons_tx_tid;
-wire [IF_COUNT*AXIS_IF_TX_DEST_WIDTH-1:0]        axis_cons_tx_tdest;
-wire [IF_COUNT*AXIS_IF_TX_USER_WIDTH-1:0]        axis_cons_tx_tuser;
-
-
 ring_buffer #(
     .ADDR_WIDTH(RING_BUFFER_ADDR_WIDTH),
     .DATA_WIDTH(AXIS_IF_DATA_WIDTH)
@@ -816,22 +906,6 @@ consensus_tx_arbiter #(
 // --------------------------------------------------------------
 //                 Rx Modules
 // --------------------------------------------------------------
-wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_rx_tdata;
-wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           axis_cons_rx_tkeep;
-wire [IF_COUNT-1:0]                              axis_cons_rx_tvalid;
-wire [IF_COUNT-1:0]                              axis_cons_rx_tready;
-wire [IF_COUNT-1:0]                              axis_cons_rx_tlast;
-wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          axis_cons_rx_tid;
-wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        axis_cons_rx_tdest;
-wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        axis_cons_rx_tuser;
-
-wire rx_enabled;
-wire [P_NODE_ID-1:0] rx_node_id;
-wire [P_NODE_COUNT-1:0] rx_sound_bitmap;
-wire [P_LOG_ITEM_LEN-1:0] rx_payload;
-wire [P_LOG_ITEM_LEN-1:0] rx_run_id;
-wire [P_LOG_ITEM_LEN-1:0] rx_round_id;
-
 ring_buffer #(
     .ADDR_WIDTH(RING_BUFFER_ADDR_WIDTH),
     .DATA_WIDTH(AXIS_IF_DATA_WIDTH)
@@ -924,15 +998,6 @@ consensus_rx_splitter #(
 // --------------------------------------------------------------
 //                 Consensus Core
 // --------------------------------------------------------------
-
-wire i_global_enable;
-
-wire [63:0] current_run_id;
-wire [63:0] current_round_id;
-wire [63:0] current_slot_id;
-
-assign current_slot_id = current_round_id;
-
 consensus_core #(
     .P_NODE_COUNT(P_NODE_COUNT),
     .P_NODE_ID(P_NODE_ID),
@@ -948,7 +1013,7 @@ consensus_core #(
     .rst(rst),
 
     // scheduler signals
-    .i_global_enable(i_global_enable),
+    .i_global_enable(global_enable_reg),
     .ptp_sync_ts(ptp_sync_ts_rel),
     
     // data interface
@@ -959,14 +1024,13 @@ consensus_core #(
     .i_rx_round_id(rx_round_id),
 
     // control plane
-    .i_ctrl_membership_epoch(i_ctrl_membership_epoch),
-    .i_ctrl_run_id(i_ctrl_run_id),
-    .i_ctrl_membership(i_ctrl_membership),
-    .i_ctrl_activate(i_ctrl_activate),
-    .i_ctrl_reboot(i_ctrl_reboot),
+    .i_ctrl_run_id(ctrl_run_id_reg),
+    .i_ctrl_membership(ctrl_membership_reg),
+    .i_ctrl_activate(ctrl_activate_reg),
+    .i_ctrl_reboot(ctrl_reboot_reg),
 
     // status outputs
-    .o_system_halt(o_system_halt),
+    .o_system_halt(system_halt),
 
     // data output
     .o_tx_knowledge_vec(tx_knowledge_vec),

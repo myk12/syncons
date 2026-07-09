@@ -5,7 +5,8 @@ module consensus_rx #(
     parameter P_NODE_ID = 0,
     parameter P_DATA_WIDTH = 512, // Ethernet frame data width of FPGA
     parameter P_KEEP_WIDTH = P_DATA_WIDTH / 8,
-    parameter P_ID_WIDTH = PORTS_PER_IF > 1 ? $clog2(PORTS_PER_IF) : 1,
+    parameter P_PORTS_PER_IF = 1,
+    parameter P_ID_WIDTH = P_PORTS_PER_IF > 1 ? $clog2(P_PORTS_PER_IF) : 1,
     parameter P_DEST_WIDTH = 8,
     parameter P_USER_WIDTH = 1,
     parameter P_ETHERNET_TYPE = 16'h88B5,
