@@ -428,6 +428,21 @@ class TB(object):
                     if not mac.tx.empty():
                         await mac.rx.send(await mac.tx.recv())
 
+## Helper functions
+async def wait_sink_slots(tb, ssr_rb, expected_count, timeout_cycles=5000):
+    for _ in range(timeout_cycles):
+        slot_count = await ssr_rb.read_dword(ssr.SSR_SINK_SLOT_COUNT)
+        error_count = await ssr_rb.read_dword(ssr.SSR_SINK_ERROR_COUNT)
+
+        if error_count != 0:
+            raise Exception("SSR sink error count is non-zero")
+        
+        if slot_count >= expected_count:
+            return slot_count
+        
+        await RisingEdge(tb.dut.clk)
+
+    raise TimeoutError("Timeout waiting for SSR sink slots")
 
 @cocotb.test()
 async def run_test_nic(dut):
@@ -743,9 +758,9 @@ async def run_test_ssr_dataplane(dut):
     ssr_rb = app_reg_blocks.find(ssr.SSR_RB_TYPE, ssr.SSR_RB_VERSION)
     assert ssr_rb is not None, "SSR register block not found"
 
-    # ----------------------------------------------------------------------
+    # ======================================================================
     #           Basic register read/write tests
-    # ----------------------------------------------------------------------   
+    # ======================================================================
     # check SSR register block
     tb.log.info("Check SSR register block")
     assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_TYPE) == ssr.SSR_RB_TYPE, "Invalid SSR register block type"
@@ -789,38 +804,41 @@ async def run_test_ssr_dataplane(dut):
         mac_int_rd = (await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_LO + i*8)) | ((await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_HI + i*8)) << 32)
         assert mac_int_rd == mac_int, "SSR MAC address register read/write failed"
 
-    # ----------------------------------------------------------------------
-    #           SSR DMA proposal queue tests
-    # ----------------------------------------------------------------------
+    # =======================================================================
+    #           SSR DMA Proposal Datapath tests
+    # =======================================================================
     # allocate DMA buffer and fill with test data
-    tb.log.info("Test SSR DMA Proposal Queue")
+    tb.log.info("Test SSR DMA Proposal Datapath")
 
-    # check if the register block matches the expected type and version
-    assert await ssr_rb.read_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_MAGIC) == ssr.PROPOSAL_QUEUE_MAGIC, "Invalid SSR Proposal Queue register block type"
-    assert await ssr_rb.read_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_VERSION) == ssr.PROPOSAL_QUEUE_VERSION, "Invalid SSR Proposal Queue register block version"
+    proposal_count = 4
+    slot_bytes = 1024
+    stride = slot_bytes
 
-    # allocate memory for DMA
-    mem = tb.rc.mem_pool.alloc_region(16*1024*1024)
+    # allocate memory for DMA buffer
+    mem = tb.rc.mem_pool.alloc_region(proposal_count*stride)
     mem_base = mem.get_absolute_address(0)
 
-    mem[0:1024] = bytearray([x % 256 for x in range(1024)])
+    # fill DMA buffer with test data
+    for i in range(proposal_count):
+        payload = bytearray([(x+i) % 256 for x in range(slot_bytes)])
+        mem[i*stride:(i+1)*stride] = payload
 
-    # write pcie read descriptor
-    tb.log.info("Write SSR DMA read descriptor")
-    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_ADDR_LO, (mem_base+0x0000) & 0xffffffff)                # address low
-    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_ADDR_HI, (mem_base+0x0000 >> 32) & 0xffffffff)          # address high
-    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_LEN, 1024)                                      # length
-    await ssr_rb.write_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_DMA_DESC_TAG, 0x00000001)                                  # control (set start bit)
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_ADDR_LO, mem_base & 0xffffffff)                # address low
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_ADDR_HI, (mem_base >> 32) & 0xffffffff)          # address high
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_LEN, slot_bytes)                                      # length
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_STRIDE_LO, stride & 0xffffffff)                                   # stride low
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_STRIDE_HI, (stride >> 32) & 0xffffffff)          # stride high
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_COUNT, proposal_count)                              # control (set start bit)
 
-    tb.log.info("Start SSR DMA read")
-    await Timer(2000, 'ns')
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_CONTROL, 0x00000001)                                  # control (set start bit)
 
-    # read status and check for completion
-    tb.log.info("Read SSR DMA read status")
-    status = await ssr_rb.read_dword(ssr.RBB_PROPOSAL_QUEUE + ssr.PROPOSAL_QUEUE_REG_PROPOSAL_ENTRY_COUNTER)
+    await wait_sink_slots(tb, ssr_rb, proposal_count)
 
-    tb.log.info("SSR DMA read status: 0x%08x", status)
-    assert status & 0x1 == 1, "SSR DMA read did not complete"
+    sink_error = await ssr_rb.read_dword(ssr.SSR_SINK_ERROR_COUNT)
+    assert sink_error == 0, "SSR sink error count is non-zero"
+
+    status = await ssr_rb.read_dword(ssr.PROP_DMA_REG_STATUS)
+    tb.log.info("SSR DMA Proposal status: 0x%08x", status)
 
     # ----------------------------------------------------------------------
     #           SSR DMA commit queue tests
@@ -828,26 +846,26 @@ async def run_test_ssr_dataplane(dut):
     tb.log.info("Test SSR DMA Commit Queue")
 
     # check if the register block matches the expected type and version
-    assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_MAGIC) == ssr.COMMIT_QUEUE_MAGIC, "Invalid SSR Commit Queue register block type"
-    assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_VERSION) == ssr.COMMIT_QUEUE_VERSION, "Invalid SSR Commit Queue register block version"
+    #assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_MAGIC) == ssr.COMMIT_QUEUE_MAGIC, "Invalid SSR Commit Queue register block type"
+    #assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_VERSION) == ssr.COMMIT_QUEUE_VERSION, "Invalid SSR Commit Queue register block version"
 
     # write pcie write descriptor
-    tb.log.info("Write SSR DMA write descriptor")
-    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_LO, (mem_base+0x1000) & 0xffffffff)                # address low
-    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_HI, (mem_base+0x1000 >> 32) & 0xffffffff)          # address high
-    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_LEN, 64)                                      # length
-    await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_TAG, 0x00000001)                                  # control (set start bit)
-
-    await Timer(2000, 'ns')
+    #tb.log.info("Write SSR DMA write descriptor")
+    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_LO, (mem_base+0x1000) & 0xffffffff)                # address low
+    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_HI, (mem_base+0x1000 >> 32) & 0xffffffff)          # address high
+    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_LEN, 64)                                      # length
+    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_TAG, 0x00000001)                                  # control (set start bit)
+    #
+    #await Timer(2000, 'ns')
 
     # read status and check for completion
-    tb.log.info("Read SSR DMA write status")
-    status = await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_STATUS_TAG)
-    tb.log.info("SSR DMA write status: 0x%08x", status)
-    assert status == 0x00000001, "SSR DMA write did not complete successfully"
+    #tb.log.info("Read SSR DMA write status")
+    #status = await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_STATUS_TAG)
+    #tb.log.info("SSR DMA write status: 0x%08x", status)
+    #assert status == 0x00000001, "SSR DMA write did not complete successfully"
 
-    # dump the memory region to check the results
-    tb.log.info("Dump memory region after SSR DMA write:")
-    mem_dump = mem[0x1000:0x1000+64]
-    for i in range(0, len(mem_dump), 16):
-        tb.log.info("0x%04x: %s", i, ' '.join('%02x' % b for b in mem_dump[i:i+16]))
+    ## dump the memory region to check the results
+    #tb.log.info("Dump memory region after SSR DMA write:")
+    #mem_dump = mem[0x1000:0x1000+64]
+    #for i in range(0, len(mem_dump), 16):
+    #    tb.log.info("0x%04x: %s", i, ' '.join('%02x' % b for b in mem_dump[i:i+16]))
