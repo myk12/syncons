@@ -57,9 +57,10 @@ VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/common/rtl/mqnic_tx_scheduler_block_rr.v
 VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/common/rtl/tx_scheduler_rr.v
 # Application block sources
 VERILOG_SOURCES += ../../rtl/mqnic_app_block_ssr_dataplane.v
-VERILOG_SOURCES += ../../rtl/ssr_dataplane.v
-VERILOG_SOURCES += ../../rtl/proposal_queue.v
-VERILOG_SOURCES += ../../rtl/commit_queue.v
+VERILOG_SOURCES += ../../tb/ssr_dataplane/ssr_dataplane.v
+VERILOG_SOURCES += ../../tb/ssr_dataplane/proposal_buffer_sink.v
+VERILOG_SOURCES += ../../rtl/proposal_dma_reader.v
+VERILOG_SOURCES += ../../rtl/proposal_buffer.v
 # Ethernet sources
 VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/lib/eth/rtl/mac_ctrl_rx.v
 VERILOG_SOURCES += $(CORUNDUM_RTL_PATH)/lib/eth/rtl/mac_ctrl_tx.v

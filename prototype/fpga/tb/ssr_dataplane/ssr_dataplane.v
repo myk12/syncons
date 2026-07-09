@@ -29,6 +29,20 @@
  *      - 0x0028 ROUND_LEN_NS
  *      - 0x002c ETHERNET_TYPE
 
+ *  // TEST Only Registers
+ *      - 0x0040 GEN_COUNT
+ *      - 0x0044 GEN_CONTROL
+ *          bit 0: start
+ *          bit 1: stop
+ *          bit 2: clear
+ *
+ *      - 0x0048 GEN_STATUS
+ *          bit 0: busy
+ *          bit 1: done
+ *
+ *      - 0x004c GEN_COUNT_BEAT
+ *      - 0x0050 GEN_COUNT_SLOT        
+
  *  // Replica MAC table
  *  > Each entry is 8 bytes:
  *      - 0x0100 + (i * 8) + 0x0  REPLICA_MAC_LO[i]
@@ -271,8 +285,10 @@ localparam [REG_ADDR_WIDTH-1:0] RBB_COMMON          = 24'h000000; // base addres
 localparam [REG_ADDR_WIDTH-1:0] RBB_PROPOSAL_QUEUE  = 24'h001000; // base address of DMA register block
 localparam [REG_ADDR_WIDTH-1:0] RBB_COMMIT_QUEUE    = 24'h002000; // base address of commit queue register block
 
-// DMA proposal queue
-localparam RAM_SEL_RPOP = 0;
+localparam RAM_SEL_PROP = 0; // RAM selector for proposal buffer read operations
+localparam DMA_TAG_PROP = 0; // DMA tag for proposal buffer read operations
+localparam RAM_SEL_COMMIT = 1; // RAM selector for commit buffer write operations
+localparam DMA_TAG_COMMIT = 0;
 
 // check configuration parameters
 initial begin
@@ -352,10 +368,16 @@ wire config_valid = replica_num_reg != 0 &&
                     round_length_ns_reg != 0 &&
                     replica_id_reg < replica_num_reg;
 
-// sink status
-wire [31:0] proposal_sink_slot_count;
-wire [31:0] proposal_sink_beat_count;
-wire [31:0] proposal_sink_error_count;
+reg [31:0] commit_gen_count_reg = 32'd0;
+
+reg commit_gen_start_reg = 1'b0;
+reg commit_gen_stop_reg = 1'b0;
+reg commit_gen_clear_reg = 1'b0;
+
+wire commit_gen_busy;
+wire commit_gen_done;
+wire [31:0] commit_gen_generated_count;
+wire [31:0] commit_gen_generated_beat_count;
 
 // --------------------------------------------------------------
 //                  Register block logic
@@ -402,6 +424,11 @@ always @* begin
             RBB_COMMON + 12'h024: replica_num_reg_next  = reg_wr_data; // REPLICA_NUM
             RBB_COMMON + 12'h028: round_length_ns_reg_next  = reg_wr_data; // ROUND_LENGTH_NS
             RBB_COMMON + 12'h02c: ethernet_port_reg_next    = reg_wr_data; // ETHERNET_PORT
+
+            RBB_COMMON + 12'h040: commit_gen_count_reg = reg_wr_data; // GEN_COUNT
+            RBB_COMMON + 12'h044: commit_gen_start_reg = reg_wr_data; // GEN_START
+            RBB_COMMON + 12'h048: commit_gen_stop_reg = reg_wr_data; // GEN_STOP
+            RBB_COMMON + 12'h04c: commit_gen_clear_reg = reg_wr_data; // GEN_CLEAR
 
             // replica MAC table entries
             // replica 0
@@ -453,11 +480,6 @@ always @* begin
             RBB_COMMON + 12'h028: reg_rd_data_common_next = round_length_ns_reg; // ROUND_LENGTH_NS
             RBB_COMMON + 12'h02c: reg_rd_data_common_next = ethernet_port_reg; // ETHERNET_PORT
 
-            // proposal sink debug/status registers
-            RBB_COMMON + 12'h030: reg_rd_data_common_next = proposal_sink_slot_count; // PROPOSAL_SINK_SLOT_COUNT
-            RBB_COMMON + 12'h034: reg_rd_data_common_next = proposal_sink_beat_count; // PROPOSAL_SINK_BEAT_COUNT
-            RBB_COMMON + 12'h038: reg_rd_data_common_next = proposal_sink_error_count; // PROPOSAL_SINK_ERROR_COUNT
-
             // replica MAC table entries
             // replica 0
             RBB_COMMON + 12'h100 + 0: reg_rd_data_common_next = replica_mac_lo[0]; // REPLICA_MAC_LO[0]
@@ -480,7 +502,6 @@ always @* begin
             // replica 6
             RBB_COMMON + 12'h100 + 48: reg_rd_data_common_next = replica_mac_lo[6]; // REPLICA_MAC_LO[6]
             RBB_COMMON + 12'h100 + 52: reg_rd_data_common_next = replica_mac_hi[6]; // REPLICA_MAC_HI[6]
-
             default: begin
                 reg_rd_data_common_next = 0; // invalid address, return 0
                 reg_rd_ack_common_next = 1'b0; // do not acknowledge
@@ -562,6 +583,11 @@ wire                                            proposal_buf_rd_ready;
 wire                                            proposal_buf_tx_last;
 wire [DMA_LEN_WIDTH-1:0]                        proposal_buf_tx_len;
 
+// sink status
+wire [31:0] proposal_sink_slot_count;
+wire [31:0] proposal_sink_beat_count;
+wire [31:0] proposal_sink_error_count;
+
 // sink control
 wire proposal_sink_enable;
 wire proposal_sink_clear;
@@ -590,7 +616,6 @@ proposal_dma_reader #(
 
     .RAM_SEL_PROP(RAM_SEL_PROP),
     .DMA_TAG_PROP(DMA_TAG_PROP),
-
     .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES)
 )
 proposal_dma_reader_inst (
@@ -734,21 +759,166 @@ proposal_buffer_sink_inst (
 // ==============================================================
 //                          RX datapath
 // ==============================================================
-assign reg_wr_wait_commit_queue = 0;
-assign reg_wr_ack_commit_queue = reg_wr_en_commit_queue; // acknowledge immediately, no wait states
+wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]     commit_in_data;
+wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]       commit_in_be;
+wire                                            commit_in_valid;
+wire                                            commit_in_ready;
+wire                                            commit_in_last;
 
-assign reg_rd_wait_commit_queue = 0;
-assign reg_rd_ack_commit_queue = reg_rd_en_commit_queue; // acknowledge immediately, no wait states
-assign reg_rd_data_commit_queue = 0; // no data to return for commit queue
+wire                                            commit_head_slot_valid;
+wire [RAM_ADDR_WIDTH-1:0]                       commit_head_slot_addr;
+wire [DMA_LEN_WIDTH-1:0]                        commit_head_slot_len;
 
-assign m_axis_data_dma_write_desc_dma_addr = 0;
-assign m_axis_data_dma_write_desc_ram_sel = 0;
-assign m_axis_data_dma_write_desc_ram_addr = 0;
-assign m_axis_data_dma_write_desc_imm = 0;
-assign m_axis_data_dma_write_desc_imm_en = 0;
-assign m_axis_data_dma_write_desc_len = 0;
-assign m_axis_data_dma_write_desc_tag = 0;
-assign m_axis_data_dma_write_desc_valid = 0;
+wire                                            commit_head_slot_pop_valid;
+wire                                            commit_head_slot_pop_ready;
+
+wire [31:0]                                     commit_buffer_error_count;
+
+wire commit_reg_wr_sel = reg_wr_addr[23:12] == RBB_COMMIT_QUEUE[23:12];
+wire commit_reg_rd_sel = reg_rd_addr[23:12] == RBB_COMMIT_QUEUE[23:12]; 
+wire commit_reg_wr_ack, commit_reg_rd_ack;
+wire [REG_DATA_WIDTH-1:0] commit_reg_rd_data;
+
+commit_generator #(
+    .RAM_SEG_COUNT(RAM_SEG_COUNT),
+    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
+    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
+    .COMMIT_SLOT_BYTES(COMMIT_SLOT_BYTES)
+)
+commit_generator_inst (
+    .clk(clk),
+    .rst(rst),
+
+    .start(commit_gen_start_reg),
+    .stop(commit_gen_stop_reg),
+    .clear(commit_gen_clear_reg),
+    .commit_count(commit_gen_count_reg),
+
+    .busy(commit_gen_busy),
+    .done(commit_gen_done),
+    .generated_count(commit_gen_generated_count),
+    .generated_beat_count(commit_gen_generated_beat_count),
+
+    .commit_in_data(commit_in_data),
+    .commit_in_be(commit_in_be),
+    .commit_in_valid(commit_in_valid),
+    .commit_in_ready(commit_in_ready),
+    .commit_in_last(commit_in_last)
+);
+
+commit_buffer #(
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+
+    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
+    .RAM_SEL_COMMIT(RAM_SEL_COMMIT),
+    
+    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
+    .RAM_SEG_COUNT(RAM_SEG_COUNT),
+    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
+    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
+    .RAM_SEG_ADDR_WIDTH(RAM_SEG_ADDR_WIDTH),
+    .RAM_PIPELINE(RAM_PIPELINE),
+
+    .COMMIT_SLOT_BYTES(COMMIT_SLOT_BYTES),
+    .COMMIT_SLOT_COUNT(64)
+)
+commit_buffer_inst (
+    .clk(clk),
+    .rst(rst),
+
+    // write interface from commit generator
+    .commit_in_data(commit_in_data),
+    .commit_in_be(commit_in_be),
+    .commit_in_valid(commit_in_valid),
+    .commit_in_ready(commit_in_ready),
+    .commit_in_last(commit_in_last),
+
+    // commit head slot interface
+    .head_slot_valid(commit_head_slot_valid),
+    .head_slot_addr(commit_head_slot_addr),
+    .head_slot_len(commit_head_slot_len),
+
+    // commit head slot pop interface
+    .head_slot_pop_valid(commit_head_slot_pop_valid),
+    .head_slot_pop_ready(commit_head_slot_pop_ready),
+
+    // control/status outputs
+    .commit_error_count(commit_buffer_error_count),
+
+    .dma_ram_rd_cmd_sel(data_dma_ram_rd_cmd_sel),
+    .dma_ram_rd_cmd_addr(data_dma_ram_rd_cmd_addr),
+    .dma_ram_rd_cmd_valid(data_dma_ram_rd_cmd_valid),
+    .dma_ram_rd_cmd_ready(data_dma_ram_rd_cmd_ready),
+
+    .dma_ram_rd_resp_data(data_dma_ram_rd_resp_data),
+    .dma_ram_rd_resp_valid(data_dma_ram_rd_resp_valid),
+    .dma_ram_rd_resp_ready(data_dma_ram_rd_resp_ready)
+);
+
+commit_dma_writer #(
+    .REG_ADDR_WIDTH(REG_ADDR_WIDTH),
+    .REG_DATA_WIDTH(REG_DATA_WIDTH),
+    .REG_STRB_WIDTH(REG_STRB_WIDTH),
+    .RB_BASE_ADDR(RBB_COMMIT_QUEUE),
+
+    .DMA_ADDR_WIDTH(DMA_ADDR_WIDTH),
+    .DMA_IMM_ENABLE(DMA_IMM_ENABLE),
+    .DMA_IMM_WIDTH(DMA_IMM_WIDTH),
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+    .DMA_TAG_WIDTH(DMA_TAG_WIDTH),
+
+    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
+    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
+
+    .RAM_SEL_COMMIT(RAM_SEL_COMMIT),
+    .DMA_TAG_COMMIT(DMA_TAG_COMMIT)
+)
+commit_dma_writer_inst (
+    .clk(clk),
+    .rst(rst),
+
+    .reg_wr_addr(reg_wr_addr),
+    .reg_wr_data(reg_wr_data),
+    .reg_wr_strb(reg_wr_strb),
+    .reg_wr_en(commit_reg_wr_sel && reg_wr_en),
+    .reg_wr_wait(),
+    .reg_wr_ack(commit_reg_wr_ack),
+
+    .reg_rd_addr(reg_rd_addr),
+    .reg_rd_en(commit_reg_rd_sel && reg_rd_en),
+    .reg_rd_data(commit_reg_rd_data),
+    .reg_rd_wait(),
+    .reg_rd_ack(commit_reg_rd_ack),
+
+    .m_axis_dma_write_desc_dma_addr(m_axis_data_dma_write_desc_dma_addr),
+    .m_axis_dma_write_desc_ram_sel(m_axis_data_dma_write_desc_ram_sel),
+    .m_axis_dma_write_desc_ram_addr(m_axis_data_dma_write_desc_ram_addr),
+    .m_axis_dma_write_desc_imm(m_axis_data_dma_write_desc_imm),
+    .m_axis_dma_write_desc_imm_en(m_axis_data_dma_write_desc_imm_en),
+    .m_axis_dma_write_desc_len(m_axis_data_dma_write_desc_len),
+    .m_axis_dma_write_desc_tag(m_axis_data_dma_write_desc_tag),
+    .m_axis_dma_write_desc_valid(m_axis_data_dma_write_desc_valid),
+    .m_axis_dma_write_desc_ready(m_axis_data_dma_write_desc_ready),
+
+    .s_axis_dma_write_desc_status_tag(s_axis_data_dma_write_desc_status_tag),
+    .s_axis_dma_write_desc_status_error(s_axis_data_dma_write_desc_status_error),
+    .s_axis_dma_write_desc_status_valid(s_axis_data_dma_write_desc_status_valid),
+
+    .head_slot_valid(commit_head_slot_valid),
+    .head_slot_addr(commit_head_slot_addr),
+    .head_slot_len(commit_head_slot_len),
+
+    .head_slot_pop_valid(commit_head_slot_pop_valid),
+    .head_slot_pop_ready(commit_head_slot_pop_ready)
+);
+
+assign reg_wr_ack = reg_wr_ack_common || proposal_reg_wr_ack || commit_reg_wr_ack;
+assign reg_rd_ack = reg_rd_ack_common || proposal_reg_rd_ack || commit_reg_rd_ack;
+assign reg_rd_data = reg_rd_ack_common ? reg_rd_data_common : 
+                    proposal_reg_rd_ack ? proposal_reg_rd_data : 
+                    commit_reg_rd_ack ? commit_reg_rd_data : {REG_DATA_WIDTH{1'b0}};
+
+
 
 // --------------------------------------------------------------
 //                 Ethernet interface modules

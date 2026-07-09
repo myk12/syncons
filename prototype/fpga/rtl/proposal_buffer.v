@@ -114,7 +114,7 @@ initial begin
     end
 
     if (PROPOSAL_SLOT_BYTES_64 > DMA_LEN_LIMIT_64) begin
-        $error("PROPOSAL_SLOT_BYTES (%0d) exceeds DMA_LEN_LIMIT (%0d)", PROPOSAL_SLOT_BYTES, DMA_LEN_LIMIT);
+        $error("PROPOSAL_SLOT_BYTES (%0d) exceeds DMA_LEN_LIMIT (%0d)", PROPOSAL_SLOT_BYTES, DMA_LEN_LIMIT_64);
         $finish;
     end
 
