@@ -858,35 +858,35 @@ proposal_buffer_inst (
 // -------------------------------------------------
 //     instance of proposal buffer sink
 // -------------------------------------------------
-proposal_buffer_sink #(
-    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+// proposal_buffer_sink #(
+//     .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
 
-    .RAM_SEG_COUNT(RAM_SEG_COUNT),
-    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
-    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
+//     .RAM_SEG_COUNT(RAM_SEG_COUNT),
+//     .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
+//     .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
 
-    .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES)
-)
-proposal_buffer_sink_inst (
-    .clk(clk),
-    .rst(rst),
+//     .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES)
+// )
+// proposal_buffer_sink_inst (
+//     .clk(clk),
+//     .rst(rst),
 
-    // read interface from proposal buffer
-    .buf_rd_data(proposal_buf_rd_data),
-    .buf_rd_be(proposal_buf_rd_be),
-    .buf_rd_valid(proposal_buf_rd_valid),
-    .buf_rd_ready(proposal_buf_rd_ready),
-    .buf_tx_last(proposal_buf_tx_last),
-    .buf_tx_len(proposal_buf_tx_len),
+//     // read interface from proposal buffer
+//     .buf_rd_data(proposal_buf_rd_data),
+//     .buf_rd_be(proposal_buf_rd_be),
+//     .buf_rd_valid(proposal_buf_rd_valid),
+//     .buf_rd_ready(proposal_buf_rd_ready),
+//     .buf_tx_last(proposal_buf_tx_last),
+//     .buf_tx_len(proposal_buf_tx_len),
 
-    // Control/status outputs
-    .sink_enable(proposal_sink_enable),
-    .sink_clear(proposal_sink_clear),
+//     // Control/status outputs
+//     .sink_enable(proposal_sink_enable),
+//     .sink_clear(proposal_sink_clear),
 
-    .sink_slot_count(proposal_sink_slot_count),
-    .sink_beat_count(proposal_sink_beat_count),
-    .sink_error_count(proposal_sink_error_count)
-);
+//     .sink_slot_count(proposal_sink_slot_count),
+//     .sink_beat_count(proposal_sink_beat_count),
+//     .sink_error_count(proposal_sink_error_count)
+// );
 
 // ==============================================================
 //                          RX datapath
@@ -963,8 +963,7 @@ consensus_tx_arbiter #(
     .AXIS_TX_USER_WIDTH(AXIS_IF_TX_USER_WIDTH),
     .AXIS_IF_TX_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
     .AXIS_IF_TX_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH)
-)
-(
+) consensus_tx_arbiter_inst (
     .s_axis_cons_tx_tdata(axis_cons_tx_tdata),
     .s_axis_cons_tx_tkeep(axis_cons_tx_tkeep),
     .s_axis_cons_tx_tvalid(axis_cons_tx_tvalid),
@@ -1067,8 +1066,7 @@ consensus_rx_splitter #(
     .AXIS_RX_USER_WIDTH(AXIS_IF_RX_USER_WIDTH),
     .AXIS_IF_RX_ID_WIDTH(AXIS_IF_RX_ID_WIDTH),
     .AXIS_IF_RX_DEST_WIDTH(AXIS_IF_RX_DEST_WIDTH)
-)
-(
+) consensus_rx_splitter_inst (
     .s_axis_if_rx_tdata(s_axis_if_rx_tdata),
     .s_axis_if_rx_tkeep(s_axis_if_rx_tkeep),
     .s_axis_if_rx_tvalid(s_axis_if_rx_tvalid),

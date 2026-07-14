@@ -10,7 +10,13 @@ module consensus_rx #(
     parameter P_DEST_WIDTH = 8,
     parameter P_USER_WIDTH = 1,
     parameter P_ETHERNET_TYPE = 16'h88B5,
-    parameter integer   P_LOG_ITEM_LEN  = 32      // 40 bytes default, smaller to fit room for other fields in the test frame
+    parameter integer   P_LOG_ITEM_LEN  = 32,      // 40 bytes default, smaller to fit room for other fields in the test frame
+    
+    parameter RAM_SEG_COUNT = 2,
+    parameter RAM_SEG_DATA_WIDTH = 256*2/RAM_SEG_COUNT,
+    parameter RAM_SEG_BE_WIDTH = RAM_SEG_DATA_WIDTH/8,
+
+    parameter COMMIT_SLOT_BYTES = 1024
 ) (
     // clock and reset
     input wire                          clk,
@@ -20,6 +26,13 @@ module consensus_rx #(
     input wire                          i_rx_enabled,
     input wire [63:0]                   i_current_run_id,
     input wire [63:0]                   i_current_round_id,
+
+    // Commit stream output to commit_buffer
+    output wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      commit_in_data,
+    output wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        commit_in_be,
+    output wire                                             commit_in_valid,
+    output wire                                             commit_in_last,
+    input  wire                                             commit_in_ready,
 
     // AXI Stream Slave Input
     input wire [P_DATA_WIDTH-1:0]       s_axis_tdata,
@@ -35,7 +48,6 @@ module consensus_rx #(
     output reg                              o_rx_valid,     // high when a valid packet is parsed
     output reg [7:0]                        o_rx_node_id,   // node ID extracted from packet
     output reg [7:0]                        o_rx_sound_bitmap, // sound bitmap extracted from packet
-    output reg [P_LOG_ITEM_LEN*8-1:0]       o_rx_payload,
     output reg [63:0]                       o_rx_run_id,
     output reg [63:0]                       o_rx_round_id
 );
@@ -46,6 +58,24 @@ module consensus_rx #(
 // The consensus model must run at the line rate of incoming packets.
 // Therefore, we assume that the AXI Stream input is always ready to accept data.
 assign s_axis_tready = 1'b1; // Always ready to accept data
+
+localparam integer RAM_BEAT_BYTES =
+    RAM_SEG_COUNT * RAM_SEG_BE_WIDTH;
+
+localparam integer COMMIT_SLOT_BEAT_COUNT =
+    COMMIT_SLOT_BYTES / RAM_BEAT_BYTES;
+
+localparam integer COMMIT_SLOT_BEAT_INDEX_WIDTH =
+    COMMIT_SLOT_BEAT_COUNT > 1 ? $clog2(COMMIT_SLOT_BEAT_COUNT) : 1;
+
+localparam [COMMIT_SLOT_BEAT_INDEX_WIDTH-1:0] COMMIT_LAST_BEAT_INDEX =
+    COMMIT_SLOT_BEAT_COUNT - 1;
+
+localparam integer DATA_WORD_COUNT =
+    RAM_SEG_COUNT * RAM_SEG_DATA_WIDTH / 32;
+
+localparam [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0] FULL_BE =
+    {RAM_SEG_COUNT*RAM_SEG_BE_WIDTH{1'b1}};
 
 //------------------------------------------------
 //         Packet Parsing Logic
@@ -113,30 +143,39 @@ always @(posedge clk) begin
         o_rx_valid <= 0;
         o_rx_node_id <= 0;
         o_rx_sound_bitmap <= 0;
-        o_rx_payload <= 0;
+        commit_in_data <= 0;
+        commit_in_be <= 0;
         o_rx_run_id <= 0;
         o_rx_round_id <= 0;
+        commit_in_valid <= 0;
     end else if (!i_rx_enabled) begin
         o_rx_valid <= 0;
         o_rx_node_id <= 0;
         o_rx_sound_bitmap <= 0;
-        o_rx_payload <= 0;
+        commit_in_data <= 0;
+        commit_in_be <= 0;
         o_rx_run_id <= 0;
         o_rx_round_id <= 0;
+        commit_in_valid <= 0;
     end else begin
         o_rx_valid <= r_packet_valid;
-        if (r_packet_valid) begin
+        commit_in_valid <= r_packet_valid;
+        if (r_packet_valid && commit_in_ready) begin
             o_rx_node_id <= w_rx_node_id;
             o_rx_sound_bitmap <= w_rx_knowledge_vec;
-            o_rx_payload <= w_rx_payload;
+            commit_in_data <= w_rx_payload;
+            commit_in_be <= FULL_BE;
+            commit_in_last <= w_rx_node_id == P_NODE_COUNT - 1; // last node in the round
             o_rx_run_id <= w_rx_run_id;
             o_rx_round_id <= w_rx_round_id;
         end else begin
             o_rx_node_id <= 0;
             o_rx_sound_bitmap <= 0;
-            o_rx_payload <= 0;
+            commit_in_data <= 0;
+            commit_in_be <= 0;
             o_rx_run_id <= 0;
             o_rx_round_id <= 0;
+            commit_in_valid <= 0;
         end
     end
 end
