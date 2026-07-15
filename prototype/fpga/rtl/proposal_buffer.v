@@ -23,6 +23,9 @@ module proposal_buffer #
 (
     parameter DMA_LEN_WIDTH = 16,
     
+    parameter RAM_SEL_WIDTH = 1,
+    parameter RAM_SEL_PROP = 0,
+
     parameter RAM_ADDR_WIDTH = 16,
     parameter RAM_SEG_COUNT = 2,
     parameter RAM_SEG_DATA_WIDTH = 256*2/RAM_SEG_COUNT,
@@ -37,14 +40,6 @@ module proposal_buffer #
     input  wire                     clk,
     input  wire                     rst,
 
-    // Generic write interface for proposal_dma_reader
-    input  wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        buf_wr_be,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      buf_wr_data,
-    input  wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]      buf_wr_addr,
-    input  wire [RAM_SEG_COUNT-1:0]                         buf_wr_valid,
-    output wire [RAM_SEG_COUNT-1:0]                         buf_wr_ready,
-    output wire [RAM_SEG_COUNT-1:0]                         buf_wr_done,
-
     // Tail slot interface to proposal_dma_reader
     output wire                                             tail_slot_valid,
     output wire [RAM_ADDR_WIDTH-1:0]                        tail_slot_addr,
@@ -53,6 +48,15 @@ module proposal_buffer #
     // commit current tail slot
     input  wire                                             tail_commit_valid,
     output wire                                             tail_commit_ready,
+
+    // DMA RAM write interface
+    input  wire [RAM_SEG_COUNT*RAM_SEL_WIDTH-1:0]           dma_ram_wr_cmd_sel,
+    input  wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        dma_ram_wr_cmd_be,
+    input  wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      dma_ram_wr_cmd_data,
+    input  wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]      dma_ram_wr_cmd_addr,
+    input  wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_cmd_valid,
+    output wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_cmd_ready,
+    output wire [RAM_SEG_COUNT-1:0]                         dma_ram_wr_done,
 
     // TX streaming interface to tx_engine
     // proposal_buffer streams the current head slot to tx_engine
@@ -63,6 +67,8 @@ module proposal_buffer #
     output wire                                             buf_tx_last,
     output wire [DMA_LEN_WIDTH-1:0]                         buf_tx_len
 );
+
+localparam [RAM_SEL_WIDTH-1:0] RAM_SEL_PROP_VALUE = RAM_SEL_PROP;
 
 localparam integer PROPOSAL_SLOT_BYTE_ADDR_WIDTH = $clog2(PROPOSAL_SLOT_BYTES);
 localparam integer PROPOSAL_SLOT_BEAT_COUNT = PROPOSAL_SLOT_BYTES / (RAM_SEG_COUNT * RAM_SEG_BE_WIDTH);
@@ -366,6 +372,7 @@ end
 // ==============================================================================
 //              Proposal payload RAM
 // ==============================================================================
+
 dma_psdpram #(
     .SIZE(BUFFER_RAM_SIZE),
     .SEG_COUNT(RAM_SEG_COUNT),
@@ -379,12 +386,12 @@ proposal_ram_inst (
     .rst(rst),
 
     // Write interface
-    .wr_cmd_be(buf_wr_be),
-    .wr_cmd_addr(buf_wr_addr),
-    .wr_cmd_data(buf_wr_data),
-    .wr_cmd_valid(buf_wr_valid),
-    .wr_cmd_ready(buf_wr_ready),
-    .wr_done(buf_wr_done),
+    .wr_cmd_be(dma_ram_wr_cmd_be),
+    .wr_cmd_addr(dma_ram_wr_cmd_addr),
+    .wr_cmd_data(dma_ram_wr_cmd_data),
+    .wr_cmd_valid(dma_ram_wr_cmd_valid),
+    .wr_cmd_ready(dma_ram_wr_cmd_ready),
+    .wr_done(dma_ram_wr_done),
 
     // Read interface
     .rd_cmd_addr(ram_rd_cmd_addr),

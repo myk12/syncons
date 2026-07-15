@@ -431,8 +431,8 @@ class TB(object):
 ## Helper functions
 async def wait_sink_slots(tb, ssr_rb, expected_count, timeout_cycles=5000):
     for _ in range(timeout_cycles):
-        slot_count = await ssr_rb.read_dword(ssr.SSR_SINK_SLOT_COUNT)
-        error_count = await ssr_rb.read_dword(ssr.SSR_SINK_ERROR_COUNT)
+        slot_count = await ssr_rb.read_dword(ssr.COMMON_REG_PROPOSAL_SINK_SLOT_COUNT)
+        error_count = await ssr_rb.read_dword(ssr.COMMON_REG_PROPOSAL_SINK_ERROR_COUNT)
 
         if error_count != 0:
             raise Exception("SSR sink error count is non-zero")
@@ -810,7 +810,7 @@ async def run_test_ssr_dataplane(dut):
     # allocate DMA buffer and fill with test data
     tb.log.info("Test SSR DMA Proposal Datapath")
 
-    proposal_count = 4
+    proposal_count = 7
     slot_bytes = 1024
     stride = slot_bytes
 
@@ -832,40 +832,64 @@ async def run_test_ssr_dataplane(dut):
 
     await ssr_rb.write_dword(ssr.PROP_DMA_REG_CONTROL, 0x00000001)                                  # control (set start bit)
 
+    # enable proposal sink
+    await ssr_rb.write_dword(ssr.COMMON_REG_PROPOSAL_SINK_CONTROL, 0x00000001)                                  # control (set start bit)
+
     await wait_sink_slots(tb, ssr_rb, proposal_count)
 
-    sink_error = await ssr_rb.read_dword(ssr.SSR_SINK_ERROR_COUNT)
+    sink_error = await ssr_rb.read_dword(ssr.COMMON_REG_PROPOSAL_SINK_ERROR_COUNT)
     assert sink_error == 0, "SSR sink error count is non-zero"
 
     status = await ssr_rb.read_dword(ssr.PROP_DMA_REG_STATUS)
     tb.log.info("SSR DMA Proposal status: 0x%08x", status)
 
-    # ----------------------------------------------------------------------
+    # ======================================================================
     #           SSR DMA commit queue tests
-    # ----------------------------------------------------------------------
-    tb.log.info("Test SSR DMA Commit Queue")
+    # =====================================================================
+    tb.log.info("Test SSR DMA Commit Datapath")
 
-    # check if the register block matches the expected type and version
-    #assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_MAGIC) == ssr.COMMIT_QUEUE_MAGIC, "Invalid SSR Commit Queue register block type"
-    #assert await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_VERSION) == ssr.COMMIT_QUEUE_VERSION, "Invalid SSR Commit Queue register block version"
+    # check commit queue registers
+    magic = await ssr_rb.read_dword(ssr.COMMIT_DMA_REG_MAGIC)
+    version = await ssr_rb.read_dword(ssr.COMMIT_DMA_REG_VERSION)
+    features = await ssr_rb.read_dword(ssr.COMMIT_DMA_REG_FEATURES)
+    assert magic == ssr.COMMIT_DMA_MAGIC, "Invalid SSR commit DMA magic"
+    assert version == ssr.COMMIT_DMA_VERSION, "Invalid SSR commit DMA version"
+    assert features == ssr.COMMIT_DMA_FEATURES, "Invalid SSR commit DMA features"
 
-    # write pcie write descriptor
-    #tb.log.info("Write SSR DMA write descriptor")
-    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_LO, (mem_base+0x1000) & 0xffffffff)                # address low
-    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_ADDR_HI, (mem_base+0x1000 >> 32) & 0xffffffff)          # address high
-    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_LEN, 64)                                      # length
-    #await ssr_rb.write_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_TAG, 0x00000001)                                  # control (set start bit)
-    #
-    #await Timer(2000, 'ns')
+    # Configure common stride and start
+    stride = 1024
+    capacity = 32
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_STRIDE_LO, stride & 0xffffffff)                                   # stride low
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_STRIDE_HI, (stride >> 32) & 0xffffffff)          # stride high
 
-    # read status and check for completion
-    #tb.log.info("Read SSR DMA write status")
-    #status = await ssr_rb.read_dword(ssr.RBB_COMMIT_QUEUE + ssr.COMMIT_QUEUE_REG_DMA_DESC_STATUS_TAG)
-    #tb.log.info("SSR DMA write status: 0x%08x", status)
-    #assert status == 0x00000001, "SSR DMA write did not complete successfully"
+    # allocate memory for commit DMA buffers
+    mem_buf0 = tb.rc.mem_pool.alloc_region(capacity*stride)
+    mem_buf1 = tb.rc.mem_pool.alloc_region(capacity*stride)
+    mem0_base = mem_buf0.get_absolute_address(0)
+    mem1_base = mem_buf1.get_absolute_address(0)
 
-    ## dump the memory region to check the results
-    #tb.log.info("Dump memory region after SSR DMA write:")
-    #mem_dump = mem[0x1000:0x1000+64]
-    #for i in range(0, len(mem_dump), 16):
-    #    tb.log.info("0x%04x: %s", i, ' '.join('%02x' % b for b in mem_dump[i:i+16]))
+    # configure host buffer 0
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_ADDR_LO, mem0_base & 0xffffffff)                # address low
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_ADDR_HI, (mem0_base >> 32) & 0xffffffff)          # address high
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_SLOT_CAPACITY, slot_bytes)                                      # length
+
+    # configure host buffer 1
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_ADDR_LO, mem1_base & 0xffffffff)                # address low
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_ADDR_HI, (mem1_base >> 32) & 0xffffffff)          # address high
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_SLOT_CAPACITY, slot_bytes)
+
+    # Arm both buffers
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_CONTROL, 0x00000001)                                  # control (set start bit)
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_CONTROL, 0x00000001)
+
+    # Start DMA writer 
+    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_CONTROL, 0x00000001)                                  # control (set start bit)
+
+    # Configure and start commit generator
+    await ssr_rb.write_dword(ssr.COMMON_REG_COMMIT_GEN_COUNT, 4)
+    await ssr_rb.write_dword(ssr.COMMON_REG_COMMIT_GEN_CONTROL, 0x00000001)                                  # control (set start bit)
+
+    # wait for 10000 cycles to allow commit generator to run
+    for _ in range(10000):
+        await RisingEdge(tb.dut.clk)
+
