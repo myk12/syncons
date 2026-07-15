@@ -28,10 +28,10 @@ module consensus_rx #(
     input wire [63:0]                   i_current_round_id,
 
     // Commit stream output to commit_buffer
-    output wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]      commit_in_data,
-    output wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]        commit_in_be,
-    output wire                                             commit_in_valid,
-    output wire                                             commit_in_last,
+    output reg [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]       commit_in_data,
+    output reg [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]         commit_in_be,
+    output reg                                              commit_in_valid,
+    output reg                                              commit_in_last,
     input  wire                                             commit_in_ready,
 
     // AXI Stream Slave Input
@@ -148,6 +148,7 @@ always @(posedge clk) begin
         o_rx_run_id <= 0;
         o_rx_round_id <= 0;
         commit_in_valid <= 0;
+        commit_in_last <= 0;
     end else if (!i_rx_enabled) begin
         o_rx_valid <= 0;
         o_rx_node_id <= 0;
@@ -157,6 +158,7 @@ always @(posedge clk) begin
         o_rx_run_id <= 0;
         o_rx_round_id <= 0;
         commit_in_valid <= 0;
+        commit_in_last <= 0;
     end else begin
         o_rx_valid <= r_packet_valid;
         commit_in_valid <= r_packet_valid;
@@ -176,6 +178,7 @@ always @(posedge clk) begin
             o_rx_run_id <= 0;
             o_rx_round_id <= 0;
             commit_in_valid <= 0;
+            commit_in_last <= 0;
         end
     end
 end
