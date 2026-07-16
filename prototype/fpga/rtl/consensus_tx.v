@@ -140,7 +140,7 @@ always @(*) begin
 
     // ------- Consensus Header -------
     v_packet_flit[14*8 +: 64]  = to_big_endian_64(i_current_run_id);
-    v_packet_flit[22*8 +: 8]   = i_knowledge_vec;
+    v_packet_flit[22*8 +: P_NODE_COUNT]   = i_knowledge_vec;
     v_packet_flit[23*8 +: 8]   = P_NODE_ID[7:0];
     v_packet_flit[24*8 +: 64]  = to_big_endian_64(i_current_slot_id);
 

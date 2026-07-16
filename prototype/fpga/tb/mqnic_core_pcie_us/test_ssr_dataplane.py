@@ -96,18 +96,43 @@ async def run_test_ssr_dataplane_end_to_end(dut):
 
     tb.log.info("Healthy packet send/receive path")
     payload = bytes([x % 256 for x in range(64)])
-    pkt = (tb.driver.interfaces[0].ports[0].src_mac if hasattr(tb.driver.interfaces[0].ports[0], "src_mac") else "5A:51:52:53:54:55")
-    eth = __import__("scapy.layers.l2", fromlist=["Ether"]).Ether(src="5A:51:52:53:54:55", dst="DA:D1:D2:D3:D4:D5")
-    ip = __import__("scapy.layers.inet", fromlist=["IP", "UDP"]).IP(src="192.168.1.100", dst="192.168.1.101")
-    udp = __import__("scapy.layers.inet", fromlist=["IP", "UDP"]).UDP(sport=1, dport=2)
-    test_pkt = eth / ip / udp / payload
+    tx_data = int.from_bytes(payload, byteorder="little")
+    tx_keep = (1 << 64) - 1
 
-    await tb.driver.interfaces[0].ndevs[0].start_xmit(test_pkt.build(), 0)
-    tx_pkt = await tb.port_mac[0].tx.recv()
-    await tb.port_mac[0].rx.send(tx_pkt)
-    rx_pkt = await tb.driver.interfaces[0].ndevs[0].recv()
+    dut.m_axis_if_tx_tready.value = 1
+    dut.m_axis_if_rx_tready.value = 1
 
-    assert rx_pkt.data == test_pkt.build()
+    dut.s_axis_if_tx_tdata.value = tx_data
+    dut.s_axis_if_tx_tkeep.value = tx_keep
+    dut.s_axis_if_tx_tvalid.value = 1
+    dut.s_axis_if_tx_tlast.value = 1
+    dut.s_axis_if_tx_tid.value = 0
+    dut.s_axis_if_tx_tdest.value = 0
+    dut.s_axis_if_tx_tuser.value = 0
+
+    for _ in range(8):
+        await RisingEdge(tb.dut.clk)
+
+    assert int(dut.m_axis_if_tx_tvalid.value) == 1
+    assert int(dut.m_axis_if_tx_tlast.value) == 1
+    assert int(dut.m_axis_if_tx_tdata.value) == tx_data
+    assert int(dut.m_axis_if_tx_tkeep.value) == tx_keep
+
+    dut.s_axis_if_rx_tdata.value = tx_data
+    dut.s_axis_if_rx_tkeep.value = tx_keep
+    dut.s_axis_if_rx_tvalid.value = 1
+    dut.s_axis_if_rx_tlast.value = 1
+    dut.s_axis_if_rx_tid.value = 0
+    dut.s_axis_if_rx_tdest.value = 0
+    dut.s_axis_if_rx_tuser.value = 0
+
+    for _ in range(8):
+        await RisingEdge(tb.dut.clk)
+
+    assert int(dut.m_axis_if_rx_tvalid.value) == 1
+    assert int(dut.m_axis_if_rx_tlast.value) == 1
+    assert int(dut.m_axis_if_rx_tdata.value) == tx_data
+    assert int(dut.m_axis_if_rx_tkeep.value) == tx_keep
 
     tb.log.info("Read back the consensus halt signal in the healthy case")
     halt = await ssr_rb.read_dword(CONSENSUS_REG_HALT)

@@ -40,16 +40,16 @@ module consensus_rx #(
     input wire                          s_axis_tvalid,
     output wire                         s_axis_tready,
     input wire                          s_axis_tlast,
-    input wire [P_ID_WIDTH-1:0]         s_axis_if_rx_tid,
-    input wire [P_DEST_WIDTH-1:0]       s_axis_if_rx_tdest,
+    input wire [P_ID_WIDTH-1:0]         s_axis_tid,
+    input wire [P_DEST_WIDTH-1:0]       s_axis_tdest,
     input wire [P_USER_WIDTH-1:0]       s_axis_tuser,
 
     // Parsed Output to Consensus Module
     output reg                              o_rx_valid,     // high when a valid packet is parsed
     output reg [7:0]                        o_rx_node_id,   // node ID extracted from packet
-    output reg [7:0]                        o_rx_sound_bitmap, // sound bitmap extracted from packet
-    output reg [63:0]                       o_rx_run_id,
-    output reg [63:0]                       o_rx_round_id
+    output reg [P_NODE_COUNT-1:0]           o_rx_sound_bitmap, // sound bitmap extracted from packet
+    output reg [31:0]                       o_rx_run_id,
+    output reg [31:0]                       o_rx_round_id
 );
 
 //------------------------------------------------
@@ -113,7 +113,7 @@ wire [(P_LOG_ITEM_LEN*8)-1:0] w_rx_payload = {
 };
 
 // wire [7:0] w_rx_node_id = s_axis_if_rx_tid; // may be used instead
-wire [7:0] w_rx_dest_id = s_axis_if_rx_tdest;
+wire [7:0] w_rx_dest_id = s_axis_tdest;
 
 //------------------------------------------------
 //         Flitering Logic

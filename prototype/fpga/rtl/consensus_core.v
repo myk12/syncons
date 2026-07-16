@@ -34,13 +34,13 @@ module consensus_core #(
     // data interface
     input wire                                  i_rx_valid,
     input wire [7:0]                            i_rx_node_id,
-    input wire [7:0]                            i_rx_sound_bitmap, // bitmap of who the sender node sees as alive
+    input wire [P_NODE_COUNT-1:0]               i_rx_sound_bitmap, // bitmap of who the sender node sees as alive
     // input wire [P_LOG_ITEM_LEN*8-1:0]           i_rx_payload,
-    input wire [63:0]                           i_rx_run_id,
-    input wire [63:0]                           i_rx_round_id,
+    input wire [31:0]                           i_rx_run_id,
+    input wire [31:0]                           i_rx_round_id,
 
     // control plane
-    input wire [63:0]                           i_ctrl_run_id,
+    input wire [31:0]                           i_ctrl_run_id,
     input wire [P_NODE_COUNT-1:0]               i_ctrl_membership, // bitmap of current membership
     input wire                                  i_ctrl_activate, // signal to activate the consensus core (e.g., after configuration)
     input wire                                  i_ctrl_reboot, // signal to reboot the node
