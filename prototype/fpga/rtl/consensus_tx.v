@@ -113,8 +113,8 @@ end
 //   - Ethertype (16 bits)
 // [ Consensus Header ]
 //  - Slot ID (64 bits)
-//  - Node ID (8 bits)
 //  - Knowledge Vector (8 bits)
+//  - Node ID (8 bits)
 //  - Payload (32 bytes)
 
 reg [P_DATA_WIDTH-1:0]      v_packet_flit;

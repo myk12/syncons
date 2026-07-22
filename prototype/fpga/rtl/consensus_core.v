@@ -21,7 +21,8 @@ module consensus_core #(
     parameter P_SLOT_DURATION_NS = 4000,  // 4 microseconds
     parameter P_GUARD_NS = 50,          // 50 nanoseconds
     parameter PTP_TS_FMT_TOD = 1,
-    parameter PTP_TS_WIDTH = PTP_TS_FMT_TOD ? 96 : 64
+    parameter PTP_TS_WIDTH = PTP_TS_FMT_TOD ? 96 : 64,
+    parameter PTP_SIM = 1
 ) (
     // clock and reset
     input wire                                  clk,
@@ -89,13 +90,18 @@ reg [P_NODE_COUNT-1:0]              s_commit_sound_matrix [0:P_NODE_COUNT-1];
 // scheduler signals
 reg [63:0]  current_round_id; // same as round_id
 reg         new_slot_pulse;
-
-reg [PTP_TS_WIDTH-1:0] i_ptp_start_time_ns;
 reg last_enable;
+
+wire [31:0] ptp_ns;
+wire [47:0] ptp_sec;
+
+assign ptp_ns = PTP_SIM ? {16'b0, ptp_sync_ts[31:16]} : ptp_sync_ts[47:16];
+assign ptp_sec = PTP_SIM ? {32'b0, ptp_sync_ts[47:32]} : ptp_sync_ts[95:48];
 
 wire enable_rising_edge = i_global_enable && !last_enable;
 
-reg [PTP_TS_WIDTH-1:0] r_next_boundary;
+reg [31:0] r_next_boundary_ns;
+reg [47:0] r_next_boundary_sec;
 reg [63:0] r_slot_id_counter;
 reg [PTP_TS_WIDTH-1:0] slot_offset;
 
@@ -180,9 +186,10 @@ endfunction
 // scheduler logic
 always @(posedge clk) begin
     if (rst) begin
-        r_next_boundary     <= ~0;  // no boundary until enabled
+        r_next_boundary_ns  <= ~0;  // no boundary until enabled
+        r_next_boundary_sec <= ~0;
         r_slot_id_counter   <= 0;
-        current_round_id     <= 0;
+        current_round_id    <= 0;
         new_slot_pulse      <= 0;
         last_enable         <= 0;
         
@@ -194,25 +201,43 @@ always @(posedge clk) begin
         new_slot_pulse <= 0;  // default: no pulse
 
         if (!i_global_enable) begin
-            r_next_boundary     <= ~0;
+            r_next_boundary_ns  <= ~0;
+            r_next_boundary_sec <= ~0;
             r_slot_id_counter   <= 0;
-            current_round_id     <= 0;
+            current_round_id    <= 0;
             o_tx_allowed        <= 0;
             o_rx_enabled        <= 0;
         end else if (enable_rising_edge) begin
-            r_next_boundary <= ptp_sync_ts + P_SLOT_DURATION_NS;  // next slot after now
+            if (ptp_ns + P_SLOT_DURATION_NS >= 32'd1000_000_000) begin
+                r_next_boundary_ns <= (ptp_ns + P_SLOT_DURATION_NS) - 32'd1000_000_000;
+                r_next_boundary_sec <= ptp_sec + 1;
+            end else begin
+                r_next_boundary_ns <= ptp_ns + P_SLOT_DURATION_NS;
+                r_next_boundary_sec <= r_next_boundary_sec; 
+            end 
+            
             r_slot_id_counter  <= 0;
-        end else if (ptp_sync_ts >= r_next_boundary) begin
+        end else if (ptp_sec >= r_next_boundary_sec && ptp_ns >= r_next_boundary_ns) begin
             // Crossed a slot boundary
             new_slot_pulse      <= 1;
             current_round_id     <= r_slot_id_counter;
             r_slot_id_counter   <= r_slot_id_counter + 1;
-            r_next_boundary     <= r_next_boundary + P_SLOT_DURATION_NS;
+            if (r_next_boundary_ns + P_SLOT_DURATION_NS >= 32'd1000_000_000) begin
+                r_next_boundary_ns <= (r_next_boundary_ns + P_SLOT_DURATION_NS) - 32'd1000_000_000;
+                r_next_boundary_sec <= ptp_sec + 1;
+            end else begin
+                r_next_boundary_ns <= r_next_boundary_ns + P_SLOT_DURATION_NS;
+                r_next_boundary_sec <= r_next_boundary_sec;
+            end
         end
         
         // TX/RX gating: based on offset within current slot
         // Compute offset as ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS)
-        slot_offset <= ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS);
+        if (ptp_sec < r_next_boundary_sec) begin
+            slot_offset <= (32'd1000_000_000 + ptp_ns) - (r_next_boundary_ns - P_SLOT_DURATION_NS);
+        end else begin
+            slot_offset <= ptp_ns - (r_next_boundary_ns - P_SLOT_DURATION_NS);
+        end
         
         o_tx_allowed <= (slot_offset >= P_TX_START && slot_offset < P_TX_DONE);
         o_rx_enabled <= (slot_offset >= P_GUARD_NS);

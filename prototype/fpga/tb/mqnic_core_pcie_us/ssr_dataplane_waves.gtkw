@@ -1,0 +1,137 @@
+[*]
+[*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
+[*] Wed Jul 22 15:36:41 2026
+[*]
+[dumpfile] "/home/yaomat/syncons/prototype/fpga/tb/mqnic_core_pcie_us/mqnic_core_pcie_us.fst"
+[dumpfile_mtime] "Wed Jul 22 15:20:12 2026"
+[dumpfile_size] 2119863
+[savefile] "/home/yaomat/syncons/prototype/fpga/tb/mqnic_core_pcie_us/ssr_dataplane_waves.gtkw"
+[timestart] 34240400000
+[size] 1920 1093
+[pos] -27 -24
+*-25.000000 34308500000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] mqnic_core_pcie_us.
+[treeopen] mqnic_core_pcie_us.core_pcie_inst.
+[treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.
+[treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.
+[treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.
+[treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.
+[sst_width] 297
+[signals_width] 386
+[sst_expanded] 1
+[sst_vpaned_height] 391
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.clk
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rst
+@200
+-Rx Inputs
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tdata[511:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tdest[8:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tid
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tkeep[63:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tlast
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tready
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tuser[48:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tvalid
+@200
+-Rx to Buffer
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_in_be[127:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_in_data[1023:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_in_last
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_in_ready
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_in_valid
+@200
+-Consensus Core Rx Inputs
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_node_id[7:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_round_id[31:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_run_id[31:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_sound_bitmap[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_valid
+@200
+-Consensus Core Ctrl Inputs
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ptp_sync_ts_rel[47:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.global_enable_reg
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_activate_reg
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_membership_reg[31:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_reboot_reg
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_run_id_reg[31:0]
+@200
+-PTP Sync Outputs
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_enabled
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.tx_allowed
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.current_round_id[63:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.current_run_id[63:0]
+@200
+-Consensus Core Internals
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.new_slot_pulse
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.o_system_halt
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.slot_offset[63:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.ptp_ns[31:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.ptp_sec[47:0]
+@200
+-Consensus Core Tx Outputs
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.o_tx_allowed
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.o_tx_knowledge_vec[2:0]
+@200
+-Tx Outputs
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tdata[511:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tdest[3:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tid[12:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tkeep[63:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tlast
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tready
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tuser[16:0]
+@29
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tvalid
+@200
+-Buffer to Tx
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_rd_data[1023:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_rd_be[127:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_rd_valid
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_rd_ready
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_tx_last
+@200
+-SSR Register Inputs
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_wr_addr[23:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_wr_data[31:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_wr_ack
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_wr_en
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_wr_wait
+@200
+-SSR Register Outputs
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_rd_addr[23:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_rd_data[31:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_rd_en
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_rd_ack
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.reg_rd_wait
+[pattern_trace] 1
+[pattern_trace] 0

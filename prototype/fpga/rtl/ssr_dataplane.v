@@ -83,6 +83,7 @@ module ssr_dataplane #
     parameter PTP_TS_ENABLE     = 1,
     parameter PTP_TS_FMT_TOD    = 1,
     parameter PTP_TS_WIDTH      = PTP_TS_FMT_TOD ? 96 : 64,
+    parameter PTP_SIM           = 1,
     parameter TX_TAG_WIDTH      = 16,
     parameter MAX_TX_SIZE       = 9214,
     parameter MAX_RX_SIZE       = 9214,
@@ -420,16 +421,9 @@ wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        axis_cons_rx_tuser;
 wire rx_enabled;
 wire [7:0] rx_node_id;
 wire [P_NODE_COUNT-1:0] rx_sound_bitmap;
-wire [P_LOG_ITEM_LEN-1:0] rx_payload;
 wire [P_LOG_ITEM_LEN-1:0] rx_run_id;
 wire [P_LOG_ITEM_LEN-1:0] rx_round_id;
 
-wire                            rx_rbuffer_wr_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   rx_rbuffer_wr_data;
-wire                            rx_rbuffer_rd_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   rx_rbuffer_rd_data;
-wire                            rx_rbuffer_empty;
-wire                            rx_rbuffer_full;
 wire                            rx_valid;
 
 // --------------------------------------------------------------
@@ -583,6 +577,12 @@ always @* begin
     reg_rd_data_consensus_next    = 0;
     reg_rd_ack_consensus_next     = 1'b0;
 
+    global_enable_reg_next      = global_enable_reg;
+    ctrl_run_id_reg_next        = ctrl_run_id_reg;
+    ctrl_membership_reg_next    = ctrl_membership_reg;
+    ctrl_activate_reg_next      = ctrl_activate_reg;
+    ctrl_reboot_reg_next        = ctrl_reboot_reg;
+
 if (reg_wr_en_consensus && !reg_wr_ack_consensus_reg) begin
         // write operation - decode address and update registers
         reg_wr_ack_consensus_next = 1'b1; // acknowledge the write
@@ -687,14 +687,6 @@ end
 //                          TX datapath
 // ==============================================================
 
-// wires for proposal_dam_reader -> proposal_buffer
-wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]    proposal_buf_wr_be;
-wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]  proposal_buf_wr_addr;
-wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]  proposal_buf_wr_data;
-wire [RAM_SEG_COUNT-1:0]                     proposal_buf_wr_valid;
-wire [RAM_SEG_COUNT-1:0]                     proposal_buf_wr_ready;
-wire [RAM_SEG_COUNT-1:0]                     proposal_buf_wr_done;
-
 wire                            proposal_tail_slot_valid;
 wire [RAM_ADDR_WIDTH-1:0]       proposal_tail_slot_addr;
 wire [DMA_LEN_WIDTH-1:0]        proposal_tail_slot_len;
@@ -709,13 +701,6 @@ wire                                            proposal_buf_rd_valid;
 wire                                            proposal_buf_rd_ready;
 wire                                            proposal_buf_tx_last;
 wire [DMA_LEN_WIDTH-1:0]                        proposal_buf_tx_len;
-
-// sink control
-wire proposal_sink_enable;
-wire proposal_sink_clear;
-
-assign proposal_sink_enable = 1;
-assign proposal_sink_clear = 0;
 
 consensus_tx #(
     .P_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
@@ -972,16 +957,11 @@ wire                                            commit_head_slot_pop_ready;
 
 wire [31:0]                                     commit_buffer_error_count;
 
-wire commit_reg_wr_sel = reg_wr_addr[23:12] == RBB_COMMIT_QUEUE[23:12];
-wire commit_reg_rd_sel = reg_rd_addr[23:12] == RBB_COMMIT_QUEUE[23:12]; 
-wire commit_reg_wr_ack, commit_reg_rd_ack;
-wire [REG_DATA_WIDTH-1:0] commit_reg_rd_data;
-
 commit_buffer #(
     .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
 
     .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
-    .RAM_SEL_COMMIT(RAM_SEL_COMMIT),
+    // .RAM_SEL_COMMIT(RAM_SEL_COMMIT),
     
     .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
     .RAM_SEG_COUNT(RAM_SEG_COUNT),
@@ -1169,7 +1149,8 @@ consensus_core #(
     .P_SYS_CLOCK_FREQ_HZ(P_SYS_CLOCK_FREQ_HZ),
     .P_SLOT_DURATION_NS(P_SLOT_DURATION_NS),
     .P_GUARD_NS(P_GUARD_NS),
-    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD)
+    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD),
+    .PTP_SIM(PTP_SIM)
 ) consensus_core_inst (
     .clk(clk),
     .rst(rst),
