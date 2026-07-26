@@ -90,3 +90,8 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 prototype/host/build/
+
+.slang
+.venv
+.vscode
+.tox
