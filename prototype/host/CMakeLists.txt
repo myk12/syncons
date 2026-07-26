@@ -69,10 +69,8 @@ target_link_libraries(
 add_library(
     ssr_host_core
     src/mock_dataplane.cpp
-    src/coordination.cpp
     src/cluster.cpp
     src/node_agent.cpp
-    src/standalone_coordinator.cpp
     src/proto_conversion.cpp
     src/node_agent_service.cpp
     src/node_event_store.cpp
@@ -144,60 +142,6 @@ target_compile_options(
 )
 
 add_executable(
-    test_coordination
-    tests/test_coordination.cpp
-)
-
-target_link_libraries(test_coordination PRIVATE ssr_host_core)
-
-target_compile_options(
-    test_coordination
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-        -Wconversion
-        -Wsign-conversion
-)
-
-add_executable(
-    test_standalone_coordinator
-    tests/test_standalone_coordinator.cpp
-)
-
-target_link_libraries(test_standalone_coordinator PRIVATE ssr_host_core)
-
-target_compile_options(
-    test_standalone_coordinator
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-        -Wconversion
-        -Wsign-conversion
-)
-
-add_executable(
-    test_coordination_stream
-    tests/test_coordination_stream.cpp
-)
-
-target_link_libraries(
-    test_coordination_stream
-    PUBLIC ssr_host_core ssr_control_proto
-)
-
-target_compile_options(
-    test_coordination_stream
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-        -Wconversion
-        -Wsign-conversion
-)
-
-add_executable(
     test_node_agent_grpc
     tests/test_node_agent_grpc.cpp
 )
@@ -222,21 +166,6 @@ enable_testing()
 add_test(
     NAME mock_lifecycle
     COMMAND test_mock_lifecycle
-)
-
-add_test(
-    NAME coordination
-    COMMAND test_coordination
-)
-
-add_test(
-    NAME standalone_coordinator
-    COMMAND test_standalone_coordinator
-)
-
-add_test(
-    NAME coordination_stream
-    COMMAND test_coordination_stream
 )
 
 add_test(
