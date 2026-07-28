@@ -24,46 +24,41 @@ parameter PTP_TS_WIDTH       = PTP_TS_FMT_TOD ? 96 : 64;
 
 // Clock and reset
 reg clk;
-reg rst_n;
+reg rst;   // active-high, matches consensus_core's `rst` port
 
 // Scheduler / PTP signals
 reg                                  i_global_enable;
-reg  [PTP_TS_WIDTH-1:0]              ptp_sync_ts;
+wire [PTP_TS_WIDTH-1:0]              ptp_sync_ts;
 
-// Free-running simulated PTP nanosecond counter (TOD ns sub-field).
-// Increments every clk edge to model a PTP-synced local clock ticking
-// in real time. Kept strictly smaller than P_SLOT_DURATION_NS per step
-// so the level-sensitive boundary check in the DUT never skips a slot.
-reg  [PTP_TS_WIDTH-1:0]              r_sim_ptp_ns;
+// Free-running simulated PTP clock, modeled as real seconds/nanoseconds
+// (not a scaled scalar). Rolls ns over into sec at 1e9, matching the
+// DUT's non-sim TOD decode path (PTP_SIM=0 below): ptp_sec = ts[95:48],
+// ptp_ns = ts[47:16].
+reg [47:0] r_sim_ptp_sec;
+reg [31:0] r_sim_ptp_ns;
+
+assign ptp_sync_ts = {r_sim_ptp_sec, r_sim_ptp_ns, 16'b0};
 
 // Control plane / data plane inputs
-reg [63:0]                          i_ctrl_membership_epoch;
-reg [63:0]                          i_ctrl_run_id;
+reg [31:0]                          i_ctrl_run_id;
 reg [P_NODE_COUNT-1:0]              i_ctrl_membership;
 reg                                 i_ctrl_activate;
 reg                                 i_ctrl_reboot;
-// reg [P_LOG_ITEM_LEN*8-1:0]          i_ctrl_host_payload;
-reg [7:0]                           i_rx_sound_bitmap;
-reg [63:0]                          i_rx_run_id;
-reg [63:0]                          i_rx_round_id;
 
+reg [P_NODE_COUNT-1:0]              i_rx_sound_bitmap;
+reg [31:0]                          i_rx_run_id;
+reg [31:0]                          i_rx_round_id;
 reg                                 i_rx_valid;
 reg [7:0]                           i_rx_node_id;
-reg [P_LOG_ITEM_LEN*8-1:0]          i_rx_propose;
 
 // Outputs
-// wire [P_NODE_COUNT-1:0]             o_alive_mask;
 wire                                o_system_halt;
+wire [P_NODE_COUNT-1:0]             o_tx_knowledge_vec;
 
-// wire [P_LOG_ITEM_LEN*8*P_NODE_COUNT-1:0]  o_commit_log;
-// wire [P_NODE_COUNT-1:0]                   o_commit_valid;
-wire [P_NODE_COUNT-1:0]                   o_tx_knowledge_vec;
-wire [P_LOG_ITEM_LEN*8-1:0]               o_tx_propose;
-
-wire                                 o_tx_allowed;
-wire                                 o_rx_enabled;
-wire [63:0]                          o_current_slot_id;
-wire [63:0]                          o_current_run_id;
+wire                                o_tx_allowed;
+wire                                o_rx_enabled;
+wire [63:0]                         o_current_round_id;
+wire [63:0]                         o_current_run_id;
 
 //================================================
 // DUT Instantiation
@@ -74,10 +69,11 @@ consensus_core #(
     .P_LOG_ITEM_LEN(P_LOG_ITEM_LEN),
     .P_SLOT_DURATION_NS(P_SLOT_DURATION_NS),
     .P_GUARD_NS(P_GUARD_NS),
-    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD)
+    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD),
+    .PTP_SIM(0)   // use the real TOD field layout, matching our PTP model below
 ) uut (
     .clk(clk),
-    .rst_n(rst_n),
+    .rst(rst),
 
     .i_global_enable(i_global_enable),
     .ptp_sync_ts(ptp_sync_ts),
@@ -85,33 +81,24 @@ consensus_core #(
     .i_rx_valid(i_rx_valid),
     .i_rx_node_id(i_rx_node_id),
     .i_rx_sound_bitmap(i_rx_sound_bitmap),
-    .i_rx_payload(i_rx_propose),
     .i_rx_run_id(i_rx_run_id),
     .i_rx_round_id(i_rx_round_id),
 
-    .i_ctrl_membership_epoch(i_ctrl_membership_epoch),
     .i_ctrl_run_id(i_ctrl_run_id),
     .i_ctrl_membership(i_ctrl_membership),
     .i_ctrl_activate(i_ctrl_activate),
     .i_ctrl_reboot(i_ctrl_reboot),
-    // .i_ctrl_host_payload(i_ctrl_host_payload),
 
-    // .o_alive_mask(o_alive_mask),
     .o_system_halt(o_system_halt),
-    // .o_commit_log(o_commit_log),
-    // .o_commit_valid(o_commit_valid),
     .o_tx_knowledge_vec(o_tx_knowledge_vec),
-    .o_tx_propose(o_tx_propose),
 
     .o_tx_allowed(o_tx_allowed),
     .o_rx_enabled(o_rx_enabled),
-    .o_current_slot_id(o_current_slot_id),
+    .o_current_round_id(o_current_round_id),
     .o_current_run_id(o_current_run_id)
 );
 
-// Debug hooks into DUT internals (mirrors prior debug visibility, plus
-// the new scheduler internals so we can confirm boundary-crossing
-// behavior without guessing from outputs alone).
+// Debug hooks into DUT internals
 wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_0 = uut.s_evidence_sound_matrix[0];
 wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_1 = uut.s_evidence_sound_matrix[1];
 wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_2 = uut.s_evidence_sound_matrix[2];
@@ -120,10 +107,11 @@ wire [P_NODE_COUNT-1:0] dbg_commit_matrix_0 = uut.s_commit_sound_matrix[0];
 wire [P_NODE_COUNT-1:0] dbg_commit_matrix_1 = uut.s_commit_sound_matrix[1];
 wire [P_NODE_COUNT-1:0] dbg_commit_matrix_2 = uut.s_commit_sound_matrix[2];
 
-wire                     dbg_new_slot_pulse  = uut.new_slot_pulse;
-wire [63:0]              dbg_curr_round_id   = uut.s_curr_round_id;
-wire [PTP_TS_WIDTH-1:0]  dbg_next_boundary   = uut.r_next_boundary;
-wire [PTP_TS_WIDTH-1:0]  dbg_slot_offset     = uut.slot_offset;
+wire        dbg_new_slot_pulse   = uut.new_slot_pulse;
+wire [63:0] dbg_curr_round_id    = uut.s_curr_round_id;
+wire [31:0] dbg_next_boundary_ns  = uut.r_next_boundary_ns;
+wire [47:0] dbg_next_boundary_sec = uut.r_next_boundary_sec;
+wire [PTP_TS_WIDTH-1:0] dbg_slot_offset = uut.slot_offset;
 
 //================================================
 // Clock Generation
@@ -136,19 +124,23 @@ end
 //================================================
 // Simulated PTP Clock
 //================================================
-// Models a free-running, already-synchronized PTP local clock: it just
-// keeps counting nanoseconds every cycle regardless of reset/enable
-// state, exactly like real PTP hardware would. The DUT's scheduler is
-// responsible for aligning to it, not the other way around.
+// Free-running, already-synchronized PTP local clock: it counts real
+// nanoseconds every cycle regardless of reset/enable state, exactly like
+// real PTP hardware would, and rolls into seconds at the real 1e9-ns
+// boundary. The DUT's scheduler aligns to it, not the other way around.
 initial begin
-    r_sim_ptp_ns = 0;
+    r_sim_ptp_ns  = 0;
+    r_sim_ptp_sec = 0;
     forever begin
         @(posedge clk);
-        r_sim_ptp_ns = r_sim_ptp_ns + CLOCK_PERIOD;
+        if (r_sim_ptp_ns + CLOCK_PERIOD >= 32'd1_000_000_000) begin
+            r_sim_ptp_ns  <= (r_sim_ptp_ns + CLOCK_PERIOD) - 32'd1_000_000_000;
+            r_sim_ptp_sec <= r_sim_ptp_sec + 1;
+        end else begin
+            r_sim_ptp_ns <= r_sim_ptp_ns + CLOCK_PERIOD;
+        end
     end
 end
-
-always @(*) ptp_sync_ts = r_sim_ptp_ns;
 
 //================================================
 // Test Sequence
@@ -158,14 +150,14 @@ initial begin
     $dumpvars(0, tb_consensus_core);
     // Initialize inputs
     clk = 0;
-    rst_n = 0;
+    rst = 1;
 
     // Reset Inputs
     reset_inputs();
 
     // Release reset
     #100;
-    rst_n = 1;
+    rst = 0;
     #10;
 
     // Test Case 1: Normal Operation (all 3 nodes active)
@@ -203,30 +195,27 @@ task reset_inputs;
         i_rx_valid        = 0;
         i_rx_node_id      = 0;
         i_rx_sound_bitmap = 0;
-        i_rx_propose      = 0;
         i_rx_run_id       = 0;
         i_rx_round_id     = 0;
 
-        i_ctrl_activate         = 0;
-        i_ctrl_membership_epoch = 0;
-        i_ctrl_run_id           = 0;
-        i_ctrl_membership       = 0;
-        i_ctrl_host_payload     = 0;
-        i_ctrl_reboot           = 0;
+        i_ctrl_activate    = 0;
+        i_ctrl_run_id      = 0;
+        i_ctrl_membership  = 0;
+        i_ctrl_reboot      = 0;
     end
 endtask
 
 // Resets the DUT and the simulated PTP scheduler state together. The
-// scheduler's r_next_boundary/r_slot_id_counter only reset while
-// i_global_enable is low (or rst_n is low), so we drop enable across
-// the reset pulse to guarantee a clean slot-id restart for each test
-// case, matching how the old TB re-synchronized round_id to 0.
+// scheduler's r_next_boundary_ns/sec and r_slot_id_counter only reset
+// while i_global_enable is low (or rst is high), so we drop enable
+// across the reset pulse to guarantee a clean slot-id restart for each
+// test case.
 task pulse_reset;
     begin
-        rst_n = 0;
+        rst = 1;
         i_global_enable = 0;
         #10;
-        rst_n = 1;
+        rst = 0;
         #10;
     end
 endtask
@@ -236,15 +225,13 @@ task initialize_core;
     begin
         @(posedge clk);
         i_ctrl_activate <= 1;
-        i_ctrl_membership_epoch <= 0;
         i_ctrl_run_id <= 1;
         i_ctrl_membership <= membership;
-        i_ctrl_host_payload <= 64'hAAAAAAAAAAAAAAAA;
         i_ctrl_reboot <= 0;
 
         // Bring up the PTP scheduler. enable_rising_edge in the DUT
-        // latches r_next_boundary = ptp_sync_ts + P_SLOT_DURATION_NS at
-        // this instant, so slot 0 starts one full slot duration from
+        // latches r_next_boundary_ns/sec = ptp_sync_ts + P_SLOT_DURATION_NS
+        // at this instant, so slot 0 starts one full slot duration from
         // here (per the design note: first slot may run long since
         // there's no true epoch alignment yet).
         i_global_enable <= 1;
@@ -255,10 +242,7 @@ task initialize_core;
     end
 endtask
 
-// Blocks until the DUT's internal scheduler asserts new_slot_pulse,
-// i.e. until ptp_sync_ts has actually crossed r_next_boundary inside
-// the DUT. This replaces the old behavior of forcing new_slot_pulse
-// directly, since slot boundaries are now derived, not injected.
+// Blocks until the DUT's internal scheduler asserts new_slot_pulse
 task wait_for_slot_boundary;
     begin
         @(posedge dbg_new_slot_pulse);
@@ -270,7 +254,7 @@ endtask
 
 task trigger_round_with_packets;
     input [63:0] round_id;           // expected round id, for logging/sanity check only
-    input [63:0] run_id;
+    input [31:0] run_id;
     input [P_NODE_COUNT-1:0] active_nodes;  // bitmap of nodes sending packets
     input [P_NODE_COUNT * P_NODE_COUNT - 1:0] sound_bitmaps_packed;  // packed: {sound_bitmaps[P_NODE_COUNT-1],...,sound_bitmaps[0]}
     integer n;
@@ -312,8 +296,8 @@ endtask
 
 task send_packet;
     input [7:0] node_id;
-    input [63:0] run_id;
-    input [63:0] round_id;
+    input [31:0] run_id;
+    input [31:0] round_id;
     input [P_NODE_COUNT-1:0] sound_bitmap;
     begin
         @(posedge clk);
@@ -322,7 +306,6 @@ task send_packet;
         i_rx_run_id <= run_id;
         i_rx_round_id <= round_id;
         i_rx_sound_bitmap <= sound_bitmap;
-        i_rx_propose <= {node_id, 56'h0};
         @(posedge clk);
         i_rx_valid <= 0;
         repeat(5) @(posedge clk);

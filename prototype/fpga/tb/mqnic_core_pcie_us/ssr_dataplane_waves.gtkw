@@ -1,25 +1,25 @@
 [*]
 [*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
-[*] Wed Jul 22 15:36:41 2026
+[*] Tue Jul 28 13:45:43 2026
 [*]
 [dumpfile] "/home/yaomat/syncons/prototype/fpga/tb/mqnic_core_pcie_us/mqnic_core_pcie_us.fst"
-[dumpfile_mtime] "Wed Jul 22 15:20:12 2026"
-[dumpfile_size] 2119863
+[dumpfile_mtime] "Tue Jul 28 13:42:46 2026"
+[dumpfile_size] 2593181
 [savefile] "/home/yaomat/syncons/prototype/fpga/tb/mqnic_core_pcie_us/ssr_dataplane_waves.gtkw"
-[timestart] 34240400000
+[timestart] 38293400000
 [size] 1920 1093
 [pos] -27 -24
-*-25.000000 34308500000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+*-25.000000 38305800000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] mqnic_core_pcie_us.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.
-[sst_width] 297
-[signals_width] 386
+[sst_width] 332
+[signals_width] 581
 [sst_expanded] 1
-[sst_vpaned_height] 391
+[sst_vpaned_height] 576
 @28
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.clk
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rst
@@ -40,6 +40,28 @@ mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_ins
 @28
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.s_axis_if_rx_tvalid
 @200
+-Rx Internals
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.r_packet_valid
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.w_ethertype[15:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.w_rx_dest_id[7:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.w_rx_knowledge_vec[7:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.w_rx_node_id[7:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.w_rx_payload[255:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.w_rx_round_id[63:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_rx_inst.w_rx_run_id[63:0]
+@200
+-Commit Buffer
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.buffer_full
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.slot_count_reg[6:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.commit_in_data[1023:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.commit_in_ready
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.ram_wr_cmd_ready[1:0]
+@200
 -Rx to Buffer
 @22
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_in_be[127:0]
@@ -58,19 +80,6 @@ mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_ins
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_sound_bitmap[2:0]
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_valid
 @200
--Consensus Core Ctrl Inputs
-@22
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ptp_sync_ts_rel[47:0]
-@28
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.global_enable_reg
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_activate_reg
-@22
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_membership_reg[31:0]
-@28
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_reboot_reg
-@22
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.ctrl_run_id_reg[31:0]
-@200
 -PTP Sync Outputs
 @28
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rx_enabled
@@ -81,12 +90,38 @@ mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_ins
 @200
 -Consensus Core Internals
 @28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.state[1:0]
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.new_slot_pulse
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.o_system_halt
 @22
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.slot_offset[63:0]
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.ptp_ns[31:0]
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.ptp_sec[47:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.r_next_boundary_ns[31:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.r_next_boundary_sec[47:0]
+@200
+-Consensus Core Protocol
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.s_curr_sound_bitmap[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.s_evidence_sound_bitmap[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.s_commit_sound_bitmap[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.s_evidence_installed_membership[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.dbg_evidence_matrix_0[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.dbg_evidence_matrix_1[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.dbg_evidence_matrix_2[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.dbg_commit_matrix_0[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.dbg_commit_matrix_1[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.dbg_commit_matrix_2[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.agreed_row_valid
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.derived_sound_set[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.commit_set[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.f_row_matches[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.f_row_valid[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.f_witness_count[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.f_membership_count[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.f_quorum[2:0]
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.f_agreed_row_valid
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.f_commit_set[2:0]
 @200
 -Consensus Core Tx Outputs
 @28
@@ -104,8 +139,22 @@ mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_ins
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tready
 @22
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tuser[16:0]
-@29
+@28
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.axis_cons_tx_tvalid
+@200
+-Tx Internals
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_tx_inst.state[2:0]
+@200
+-Proposal Buffer
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.buffer_empty
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.buffer_full
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.head_pop_fire
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.slot_count_reg[6:0]
+@29
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.tx_state_reg[1:0]
 @200
 -Buffer to Tx
 @22

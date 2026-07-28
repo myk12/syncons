@@ -135,6 +135,12 @@ always @(*) begin // consensus core checks round and run ID
     end
 end
 
+reg [7:0] prev_node;
+reg [63:0] prev_round_id;
+wire new_packet;
+
+assign new_packet = (prev_node != w_rx_node_id) ? 1'b1 : (prev_round_id != w_rx_round_id ? 1'b1 : 1'b0);
+
 //------------------------------------------------
 //         Output Logic
 //------------------------------------------------
@@ -149,6 +155,8 @@ always @(posedge clk) begin
         o_rx_round_id <= 0;
         commit_in_valid <= 0;
         commit_in_last <= 0;
+        prev_node <= {8{1'b1}};
+        prev_round_id <= {64{1'b1}};
     end else if (!i_rx_enabled) begin
         o_rx_valid <= 0;
         o_rx_node_id <= 0;
@@ -159,26 +167,36 @@ always @(posedge clk) begin
         o_rx_round_id <= 0;
         commit_in_valid <= 0;
         commit_in_last <= 0;
+        prev_node <= {8{1'b1}};
+        prev_round_id <= {64{1'b1}};
     end else begin
         o_rx_valid <= r_packet_valid;
-        commit_in_valid <= r_packet_valid;
-        if (r_packet_valid && commit_in_ready) begin
+        if (r_packet_valid) begin
             o_rx_node_id <= w_rx_node_id;
             o_rx_sound_bitmap <= w_rx_knowledge_vec;
-            commit_in_data <= w_rx_payload;
-            commit_in_be <= FULL_BE;
-            commit_in_last <= w_rx_node_id == P_NODE_COUNT - 1; // last node in the round
             o_rx_run_id <= w_rx_run_id;
             o_rx_round_id <= w_rx_round_id;
         end else begin
             o_rx_node_id <= 0;
             o_rx_sound_bitmap <= 0;
-            commit_in_data <= 0;
-            commit_in_be <= 0;
             o_rx_run_id <= 0;
             o_rx_round_id <= 0;
+        end
+
+        if (commit_in_ready && r_packet_valid && new_packet) begin
+            commit_in_data <= w_rx_payload;
+            commit_in_be <= FULL_BE;
+            commit_in_last <= 1;
+            commit_in_valid <= r_packet_valid;
+            prev_node <= w_rx_node_id;
+            prev_round_id <= w_rx_round_id;
+        end else begin
+            commit_in_data <= 0;
+            commit_in_be <= 0;
             commit_in_valid <= 0;
             commit_in_last <= 0;
+            prev_node <= prev_node;
+            prev_round_id <= prev_round_id;
         end
     end
 end

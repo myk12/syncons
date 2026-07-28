@@ -269,7 +269,7 @@ always @(posedge clk) begin
                     m_axis_tdest <= 8'b0;
                     buf_rd_ready <= 1'b0;
                     last_packet_reached <= 1'b0;
-                end else
+                end else begin
                     if (r_target_node_id != P_NODE_ID && (i_knowledge_vec[r_target_node_id])) begin
                         m_axis_tdata <= v_packet_flit;
                         m_axis_tkeep <= {P_KEEP_WIDTH{1'b1}}; // All bytes valid
@@ -315,6 +315,7 @@ always @(posedge clk) begin
                         m_axis_tlast <= 1'b0;
                     end
                 end
+            end
 
             S_BROADCAST_NO_PACKET: begin
                 if (!i_tx_allowed) begin

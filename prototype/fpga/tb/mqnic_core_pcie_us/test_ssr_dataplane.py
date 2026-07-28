@@ -86,7 +86,7 @@ def configure_packet(tb, run_id, knowledge_vec, node_id, round_id, payload):
     # return bytes(packet)
     return int.from_bytes(packet, "little")
 
-async def parse_packet(tb, packet):
+def parse_packet(tb, packet):
     # Ethernet
     ethernet_type = int.from_bytes(packet[12:14], "big")
 
@@ -194,22 +194,73 @@ async def run_test_ssr_dataplane_end_to_end(dut):
 
     await activate_consensus_core(tb, ssr_rb)
 
-    while (ssr_dp_path.reg_wr_addr.value != 0x3010 or ssr_dp_path.reg_wr_ack != 1):
+    while (ssr_dp_path.reg_wr_addr.value != 0x3010 or ssr_dp_path.reg_wr_ack.value != 1):
+        await RisingEdge(tb.dut.clk)
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+            await RisingEdge(tb.dut.clk)
+
+    ssr_dp_path.m_axis_if_tx_tready.value = 1
+
+    tb.log.info("First Cycle of Startup - Expect all 1s")
+
+    for i in range(20):
+            await RisingEdge(tb.dut.clk)
+
+    for i in range(1,3):
+        packet = configure_packet(tb, 0x1, 0x7, i, 0, (0x1DEADBEEF00 | (i)))
+        await send_packet(tb, dut, packet)
+
+        for j in range(10):
+            await RisingEdge(tb.dut.clk)
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
         await RisingEdge(tb.dut.clk)
 
     for i in range(20):
-        await RisingEdge(tb.dut.clk)
+            await RisingEdge(tb.dut.clk)
 
-    tb.log.info("First Cycle of Startup - no TX expected")
+    tb.log.info("Second Cycle of Startup")
 
     for i in range(1,3):
-        packet = configure_packet(tb, 0x1, 0x7, i, 0, 0xDEADBEEF)
+        packet = configure_packet(tb, 0x1, 0x7, i, 1, (0x2DEADBEEF00 | (i)))
         await send_packet(tb, dut, packet)
 
         for j in range(5):
             await RisingEdge(tb.dut.clk)
 
-    tb.log.info("Second Cycle of Startup - TX expected")
+    while (ssr_dp_path.tx_allowed.value != 1):
+        await RisingEdge(tb.dut.clk)
+
+    ssr_dp_path.m_axis_if_tx_tready.value = 1
+
+    await RisingEdge(tb.dut.clk)
+
+    tx_packet = parse_packet(tb, ssr_dp_path.m_axis_if_tx_tdata.value)
+
+    tb.log.info("Round 2 TX packet 1 ethernet type: 0x%08x", tx_packet['ethernet_type'])
+    tb.log.info("Round 2 TX packet 1 run ID: 0x%d", tx_packet['run_id'])
+    tb.log.info("Round 2 TX packet 1 knowledge vec: 0x%08x", tx_packet['knowledge_vec'])
+    tb.log.info("Round 2 TX packet 1 node ID: 0x%d", tx_packet['node_id'])
+    tb.log.info("Round 2 TX packet 1 round ID: 0x%d", tx_packet['round_id'])
+    tb.log.info("Round 2 TX packet 1 payload: 0x%08x", tx_packet['payload'])
+
+    await RisingEdge(tb.dut.clk)
+    await RisingEdge(tb.dut.clk)
+    await RisingEdge(tb.dut.clk)
+    
+    tx_packet = parse_packet(tb, ssr_dp_path.m_axis_if_tx_tdata.value)
+
+    tb.log.info("Round 2 TX packet 2 ethernet type: 0x%08x", tx_packet['ethernet_type'])
+    tb.log.info("Round 2 TX packet 2 run ID: 0x%d", tx_packet['run_id'])
+    tb.log.info("Round 2 TX packet 2 knowledge vec: 0x%08x", tx_packet['knowledge_vec'])
+    tb.log.info("Round 2 TX packet 2 node ID: 0x%d", tx_packet['node_id'])
+    tb.log.info("Round 2 TX packet 2 round ID: 0x%d", tx_packet['round_id'])
+    tb.log.info("Round 2 TX packet 2 payload: 0x%08x", tx_packet['payload'])
+    
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+        await RisingEdge(tb.dut.clk)
+
 
 
 

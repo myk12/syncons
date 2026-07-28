@@ -87,6 +87,14 @@ reg [P_NODE_COUNT-1:0]              s_commit_sound_bitmap;
 // reg [P_LOG_ITEM_LEN*8-1:0]          s_commit_proposals [0:P_NODE_COUNT-1];
 reg [P_NODE_COUNT-1:0]              s_commit_sound_matrix [0:P_NODE_COUNT-1];
 
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_0 = s_evidence_sound_matrix[0];
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_1 = s_evidence_sound_matrix[1];
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_2 = s_evidence_sound_matrix[2];
+
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_0 = s_commit_sound_matrix[0];
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_1 = s_commit_sound_matrix[1];
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_2 = s_commit_sound_matrix[2];
+
 // scheduler signals
 reg [63:0]  current_round_id; // same as round_id
 reg         new_slot_pulse;
@@ -213,7 +221,7 @@ always @(posedge clk) begin
                 r_next_boundary_sec <= ptp_sec + 1;
             end else begin
                 r_next_boundary_ns <= ptp_ns + P_SLOT_DURATION_NS;
-                r_next_boundary_sec <= r_next_boundary_sec; 
+                r_next_boundary_sec <= ptp_sec; 
             end 
             
             r_slot_id_counter  <= 0;
@@ -322,14 +330,6 @@ always @(posedge clk) begin
     end else begin
         case (state)
             S_IDLE: begin
-                if (i_ctrl_activate) begin
-                    eval_counter <= 0;
-                    activation_pending <= 1'b1;
-                    config_run_id                   <= i_ctrl_run_id;
-                    config_installed_membership     <= i_ctrl_membership;
-                    o_system_halt <= 1'b0;
-                    r_current_sound_set             <= i_ctrl_membership; // initialize sound set to membership at start
-                end
                 if ((activation_pending || i_ctrl_activate) && round_boundary) begin
                     s_curr_round_id             <= current_round_id;
                     s_curr_installed_membership <= i_ctrl_membership;
@@ -340,7 +340,18 @@ always @(posedge clk) begin
                     //     if (i != P_NODE_ID) s_curr_proposals[i] <= 0;
                     // end
                     activation_pending <= 1'b0;
+                    
+                    s_evidence_sound_bitmap            <= i_ctrl_membership;
+                    s_evidence_sound_matrix[P_NODE_ID] <= i_ctrl_membership;
+                end else if (i_ctrl_activate) begin
+                    eval_counter <= 0;
+                    activation_pending <= 1'b1;
+                    config_run_id                   <= i_ctrl_run_id;
+                    config_installed_membership     <= i_ctrl_membership;
+                    o_system_halt <= 1'b0;
+                    r_current_sound_set             <= i_ctrl_membership; // initialize sound set to membership at start
                 end
+                
             end
 
             S_COLLECT: begin
@@ -398,7 +409,7 @@ always @(posedge clk) begin
                     
                     s_evidence_round_id <= s_curr_round_id;
                     s_evidence_installed_membership <= s_curr_installed_membership;
-                    s_evidence_sound_bitmap <= f_derived_sound_set;
+                    s_evidence_sound_bitmap <= (f_derived_sound_set == 0) ? r_current_sound_set : f_derived_sound_set;
                     // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                     //     s_evidence_proposals[i] <= s_curr_proposals[i];
                     // end
@@ -501,7 +512,8 @@ assign commit_set = agreed_row_valid ? (s_commit_sound_matrix[P_NODE_ID]) : {P_N
 
 assign halt = (!agreed_row_valid) || (!(|commit_set)) || (!derived_sound_set[P_NODE_ID]) || ((derived_sound_set & r_current_sound_set) != derived_sound_set);
 
-assign o_tx_knowledge_vec = (agreed_row_valid && eval_counter >= 2) ? derived_sound_set : {P_NODE_COUNT{1'b0}};
+// assign o_tx_knowledge_vec = (agreed_row_valid && eval_counter >= 2) ? derived_sound_set : {P_NODE_COUNT{1'b0}};
+assign o_tx_knowledge_vec = s_evidence_sound_bitmap;
 
 // forwarded values
 assign f_membership_count = count_ones(s_evidence_installed_membership);
