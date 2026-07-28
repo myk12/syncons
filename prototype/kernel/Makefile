@@ -4,7 +4,6 @@ ifneq ($(KERNELRELEASE),)
 
 MQNIC_DIR ?= $(src)/../mqnic
 SSR_SRC_DIR ?= $(src)/../..
-SSR_INCLUDE_DIR ?= $(SSR_SRC_DIR)/../include
 
 KBUILD_EXTRA_SYMBOLS := $(MQNIC_DIR)/Module.symvers
 

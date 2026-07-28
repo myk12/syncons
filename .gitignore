@@ -1,88 +1,3 @@
-<<<<<<< HEAD
-# ==============================================================================
-# 1. Build & Simulation Artifacts (Current Workflow)
-# ==============================================================================
-fpga/build/
-fpga/*.vcd
-
-# Icarus Verilog generated files
-*.out
-*.vvp
-a.out
-
-# ModelSim / QuestaSim generated files
-*.wlf
-*.vcd
-*.lxt
-*.lxt2
-*.fsdb
-*.wdb
-
-# Simulation logs
-*.log
-
-# ==============================================================================
-# 2. Xilinx Vivado (Future Proofing)
-# ==============================================================================
-# Vivado generated logs
-vivado*.log
-vivado*.jou
-vivado*.str
-hs_err_*.log
-
-# Vivado project files and directories
-.Xil/
-xsim.dir/
-*.cache/
-*.hw/
-*.ip_user_files/
-*.runs/
-*.sim/
-
-# SDK generated files
-*.sdk/
-*.xsa
-
-# Bitstream and programming files
-*.dcp
-*.bit
-*.bin
-
-# ==============================================================================
-# 3. Editors & OS System Files
-# ==============================================================================
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# VS Code
-.vscode/
-.venv/
-__pycache__/
-*.pyc
-
-# JetBrains (IntelliJ, CLion, etc.)
-.idea/
-*.iml
-
-# Vim / Emacs swap files
-*~
-*.swp
-*.swo
-
-# ==============================================================================
-# 4. C/C++ Host Software (Driver side)
-# ==============================================================================
-# Object files
-*.o
-*.obj
-
-# Dynamic Libraries
-*.so
-*.dylib
-*.dll
-=======
 # ==============================================================================
 # 1. Build & Simulation Artifacts (Current Workflow)
 # ==============================================================================
@@ -166,4 +81,17 @@ __pycache__/
 *.so
 *.dylib
 *.dll
->>>>>>> 45bffb18676507d8032deadab249c9b64ef2cb1a
+
+# ==============================================================================
+# 5. CMAKE Build System
+# ==============================================================================
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+prototype/host/build/
+
+.slang
+.venv
+.vscode
+.tox
