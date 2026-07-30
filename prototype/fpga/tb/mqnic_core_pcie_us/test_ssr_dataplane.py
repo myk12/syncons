@@ -86,29 +86,64 @@ def configure_packet(tb, run_id, knowledge_vec, node_id, round_id, payload):
     # return bytes(packet)
     return int.from_bytes(packet, "little")
 
+def swap16(x):
+    return ((x & 0xFF) << 8) | ((x >> 8) & 0xFF)
+
+def swap64(x):
+    return int.from_bytes(x.to_bytes(8, byteorder="little"), byteorder="big")
+
+def get_bits(value, high, low):
+    return (value >> low) & ((1 << (high - low + 1)) - 1)
+
 def parse_packet(tb, packet):
-    # Ethernet
-    ethernet_type = int.from_bytes(packet[12:14], "big")
+    packet = int(packet)
 
-    # Consensus Header
-    run_id = int.from_bytes(packet[14:22], "big")
-    knowledge_vec = packet[22]
-    node_id = packet[23]
-    round_id = int.from_bytes(packet[24:32], "big")
+    # ---------------- Ethernet Header ----------------
 
-    # Payload
-    payload = 0
-    for i in range(4):
-        word = int.from_bytes(packet[32 + i*8 : 40 + i*8], "big")
-        payload |= word << (64 * i)
+    dest_mac = get_bits(packet, 47, 0)
+    src_mac = get_bits(packet, 95, 48)
+
+    ethertype_net = get_bits(packet, 127, 112)
+    ethertype = swap16(ethertype_net)
+
+    # ---------------- Consensus Header ----------------
+
+    run_id_net = get_bits(packet, 175, 112)
+    run_id = swap64(run_id_net)
+
+    knowledge_vec = get_bits(packet, 183, 176)
+
+    node_id = get_bits(packet, 191, 184)
+
+    slot_id_net = get_bits(packet, 255, 192)
+    slot_id = swap64(slot_id_net)
+
+    # ---------------- Payload ----------------
+
+    payload_base = 256
+
+    word0 = swap64(get_bits(packet, payload_base + 63,  payload_base))
+    word1 = swap64(get_bits(packet, payload_base + 127, payload_base + 64))
+    word2 = swap64(get_bits(packet, payload_base + 191, payload_base + 128))
+    word3 = swap64(get_bits(packet, payload_base + 255, payload_base + 192))
+
+    payload = (
+        (word3 << 192)
+        | (word2 << 128)
+        | (word1 << 64)
+        | word0
+    )
 
     return {
-        "ethernet_type": ethernet_type,
+        "dest_mac": dest_mac,
+        "src_mac": src_mac,
+        "ethernet_type": ethertype,
         "run_id": run_id,
         "knowledge_vec": knowledge_vec,
         "node_id": node_id,
-        "round_id": round_id,
+        "round_id": slot_id,
         "payload": payload,
+        "payload_words": [word0, word1, word2, word3],
     }
 
 async def send_packet(tb, dut, packet_to_send):
