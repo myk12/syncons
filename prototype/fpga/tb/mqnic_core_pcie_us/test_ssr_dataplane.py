@@ -187,10 +187,13 @@ async def run_test_ssr_dataplane_end_to_end(dut):
     await ssr_rb.write_dword(ssr.PROP_DMA_REG_STRIDE_HI, (stride >> 32) & 0xffffffff)          # stride high
     await ssr_rb.write_dword(ssr.PROP_DMA_REG_COUNT, proposal_count)                              # control (set start bit)
 
-    # await ssr_rb.write_dword(ssr.PROP_DMA_REG_CONTROL, 0x00000001)                                  # control (set start bit)
+    await ssr_rb.write_dword(ssr.PROP_DMA_REG_CONTROL, 0x00000001)                                  # control (set start bit)
 
-    # status = await ssr_rb.read_dword(ssr.PROP_DMA_REG_STATUS)
-    # tb.log.info("SSR DMA Proposal status: 0x%08x", status)
+    status = await ssr_rb.read_dword(ssr.PROP_DMA_REG_STATUS)
+    tb.log.info("SSR DMA Proposal status: 0x%08x", status)
+
+    for i in range(500):
+        await RisingEdge(tb.dut.clk)
 
     await activate_consensus_core(tb, ssr_rb)
 
@@ -208,7 +211,7 @@ async def run_test_ssr_dataplane_end_to_end(dut):
             await RisingEdge(tb.dut.clk)
 
     for i in range(1,3):
-        packet = configure_packet(tb, 0x1, 0x7, i, 0, (0x1DEADBEEF00 | (i)))
+        packet = configure_packet(tb, 0x1, 0x7, i, 0, (0x0DEADBEEF00 | (i)))
         await send_packet(tb, dut, packet)
 
         for j in range(10):
@@ -217,13 +220,13 @@ async def run_test_ssr_dataplane_end_to_end(dut):
     while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
         await RisingEdge(tb.dut.clk)
 
-    for i in range(20):
-            await RisingEdge(tb.dut.clk)
-
     tb.log.info("Second Cycle of Startup")
 
+    for i in range(20):
+        await RisingEdge(tb.dut.clk)
+
     for i in range(1,3):
-        packet = configure_packet(tb, 0x1, 0x7, i, 1, (0x2DEADBEEF00 | (i)))
+        packet = configure_packet(tb, 0x1, 0x7, i, 1, (0x1DEADBEEF00 | (i)))
         await send_packet(tb, dut, packet)
 
         for j in range(5):
@@ -235,6 +238,8 @@ async def run_test_ssr_dataplane_end_to_end(dut):
     ssr_dp_path.m_axis_if_tx_tready.value = 1
 
     await RisingEdge(tb.dut.clk)
+    while (ssr_dp_path.axis_cons_tx_tdest != 1):
+        await RisingEdge(tb.dut.clk)
 
     tx_packet = parse_packet(tb, ssr_dp_path.m_axis_if_tx_tdata.value)
 
@@ -245,9 +250,8 @@ async def run_test_ssr_dataplane_end_to_end(dut):
     tb.log.info("Round 2 TX packet 1 round ID: 0x%d", tx_packet['round_id'])
     tb.log.info("Round 2 TX packet 1 payload: 0x%08x", tx_packet['payload'])
 
-    await RisingEdge(tb.dut.clk)
-    await RisingEdge(tb.dut.clk)
-    await RisingEdge(tb.dut.clk)
+    while (ssr_dp_path.axis_cons_tx_tdest != 2):
+        await RisingEdge(tb.dut.clk)
     
     tx_packet = parse_packet(tb, ssr_dp_path.m_axis_if_tx_tdata.value)
 
@@ -261,15 +265,110 @@ async def run_test_ssr_dataplane_end_to_end(dut):
     while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
         await RisingEdge(tb.dut.clk)
 
-
-
-
-
     tb.log.info("First Full Cycle - no halt expected")
 
+    for i in range(20):
+        await RisingEdge(tb.dut.clk)
+
+    tb.log.info("check: %d", ssr_dp_path.current_round_id)
+
+    for i in range(1,3):
+        packet = configure_packet(tb, 0x1, 0x7, i, 2, (0x2DEADBEEF00 | (i)))
+        await send_packet(tb, dut, packet)
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+        await RisingEdge(tb.dut.clk)
+
+    tb.log.info("Shrinking Sound Set without halting - Round 1")
+
+    for i in range(20):
+        await RisingEdge(tb.dut.clk)
+    
+    packet = configure_packet(tb, 0x1, 0x7, 2, 3, 0x3DEADBEEF02)
+    await send_packet(tb, dut, packet)
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+        await RisingEdge(tb.dut.clk)
+
+    tb.log.info("Shrinking Sound Set without halting - Round 2")
+
+    for i in range(20):
+        await RisingEdge(tb.dut.clk)
+        
+    packet = configure_packet(tb, 0x1, 0x5, 2, 4, 0x4DEADBEEF02)
+    await send_packet(tb, dut, packet)
+
+    while (ssr_dp_path.axis_cons_tx_tdest != 2):
+        await RisingEdge(tb.dut.clk)
+        
+    tx_packet = parse_packet(tb, ssr_dp_path.m_axis_if_tx_tdata.value)
+
+    tb.log.info("Round 2 TX packet 2 ethernet type: 0x%08x", tx_packet['ethernet_type'])
+    tb.log.info("Round 2 TX packet 2 run ID: 0x%d", tx_packet['run_id'])
+    tb.log.info("Round 2 TX packet 2 knowledge vec: 0x%08x", tx_packet['knowledge_vec'])
+    tb.log.info("Round 2 TX packet 2 node ID: 0x%d", tx_packet['node_id'])
+    tb.log.info("Round 2 TX packet 2 round ID: 0x%d", tx_packet['round_id'])
+    tb.log.info("Round 2 TX packet 2 payload: 0x%08x", tx_packet['payload'])
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+        await RisingEdge(tb.dut.clk)
+
+    tb.log.info("Shrinking Sound Set without halting - Round 3")
+
+    for i in range(20):
+        await RisingEdge(tb.dut.clk)
+            
+    packet = configure_packet(tb, 0x1, 0x5, 2, 5, 0x5DEADBEEF02)
+    await send_packet(tb, dut, packet)
+
+    while (ssr_dp_path.axis_cons_tx_tdest != 2):
+        await RisingEdge(tb.dut.clk)
+        
+    tx_packet = parse_packet(tb, ssr_dp_path.m_axis_if_tx_tdata.value)
+
+    tb.log.info("Round 2 TX packet 2 ethernet type: 0x%08x", tx_packet['ethernet_type'])
+    tb.log.info("Round 2 TX packet 2 run ID: 0x%d", tx_packet['run_id'])
+    tb.log.info("Round 2 TX packet 2 knowledge vec: 0x%08x", tx_packet['knowledge_vec'])
+    tb.log.info("Round 2 TX packet 2 node ID: 0x%d", tx_packet['node_id'])
+    tb.log.info("Round 2 TX packet 2 round ID: 0x%d", tx_packet['round_id'])
+    tb.log.info("Round 2 TX packet 2 payload: 0x%08x", tx_packet['payload'])
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+        await RisingEdge(tb.dut.clk)
 
 
-    tb.log.info("Remaning Cycles - shouldn't halt")
+    tb.log.info("Shrinking Sound Set with halting - Round 1")
+            
+    packet = configure_packet(tb, 0x1, 0x4, 2, 6, 0x6DEADBEEF02)
+    await send_packet(tb, dut, packet)
+
+    while (ssr_dp_path.axis_cons_tx_tdest != 2):
+        await RisingEdge(tb.dut.clk)
+        
+    tx_packet = parse_packet(tb, ssr_dp_path.m_axis_if_tx_tdata.value)
+
+    tb.log.info("Round 2 TX packet 2 ethernet type: 0x%08x", tx_packet['ethernet_type'])
+    tb.log.info("Round 2 TX packet 2 run ID: 0x%d", tx_packet['run_id'])
+    tb.log.info("Round 2 TX packet 2 knowledge vec: 0x%08x", tx_packet['knowledge_vec'])
+    tb.log.info("Round 2 TX packet 2 node ID: 0x%d", tx_packet['node_id'])
+    tb.log.info("Round 2 TX packet 2 round ID: 0x%d", tx_packet['round_id'])
+    tb.log.info("Round 2 TX packet 2 payload: 0x%08x", tx_packet['payload'])
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+        await RisingEdge(tb.dut.clk)
+
+
+    tb.log.info("Shrinking Sound Set with halting - Round 2")
+                
+    packet = configure_packet(tb, 0x1, 0x4, 2, 7, 0x7DEADBEEF02)
+    await send_packet(tb, dut, packet)
+
+    while (ssr_dp_path.consensus_core_inst.new_slot_pulse.value != 1):
+        await RisingEdge(tb.dut.clk)
+
+
+
+
 
 
     payload = bytes([x % 256 for x in range(64)])

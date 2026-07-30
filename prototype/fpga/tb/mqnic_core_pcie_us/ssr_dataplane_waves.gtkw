@@ -1,28 +1,33 @@
 [*]
 [*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
-[*] Tue Jul 28 13:45:43 2026
+[*] Wed Jul 29 14:01:04 2026
 [*]
 [dumpfile] "/home/yaomat/syncons/prototype/fpga/tb/mqnic_core_pcie_us/mqnic_core_pcie_us.fst"
-[dumpfile_mtime] "Tue Jul 28 13:42:46 2026"
-[dumpfile_size] 2593181
+[dumpfile_mtime] "Wed Jul 29 13:57:31 2026"
+[dumpfile_size] 4829537
 [savefile] "/home/yaomat/syncons/prototype/fpga/tb/mqnic_core_pcie_us/ssr_dataplane_waves.gtkw"
-[timestart] 38293400000
+[timestart] 52328400000
 [size] 1920 1093
 [pos] -27 -24
-*-25.000000 38305800000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+*-25.000000 52388200000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] mqnic_core_pcie_us.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.
 [treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.
+[treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.
+[treeopen] mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.commit_ram_inst.
 [sst_width] 332
 [signals_width] 581
 [sst_expanded] 1
-[sst_vpaned_height] 576
+[sst_vpaned_height] 714
 @28
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.clk
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.rst
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_core_inst.new_slot_pulse
+@23
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.current_round_id[63:0]
 @200
 -Rx Inputs
 @22
@@ -57,6 +62,9 @@ mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_ins
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.buffer_full
 @22
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.slot_count_reg[6:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.write_beat_index_reg[2:0]
+@22
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.commit_in_data[1023:0]
 @28
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.commit_buffer_inst.commit_in_ready
@@ -146,16 +154,6 @@ mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_ins
 @28
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.consensus_tx_inst.state[2:0]
 @200
--Proposal Buffer
-@28
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.buffer_empty
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.buffer_full
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.head_pop_fire
-@22
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.slot_count_reg[6:0]
-@29
-mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.tx_state_reg[1:0]
-@200
 -Buffer to Tx
 @22
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_rd_data[1023:0]
@@ -164,6 +162,16 @@ mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_ins
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_rd_valid
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_rd_ready
 mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buf_tx_last
+@200
+-Proposal Buffer
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.buffer_empty
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.buffer_full
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.head_pop_fire
+@22
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.slot_count_reg[6:0]
+@28
+mqnic_core_pcie_us.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst.proposal_buffer_inst.tx_state_reg[1:0]
 @200
 -SSR Register Inputs
 @22

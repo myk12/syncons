@@ -72,7 +72,7 @@ localparam S_IDLE                 = 3'b00;
 localparam S_BROADCAST_START      = 3'b01;
 localparam S_BROADCAST_WAIT       = 3'b10;
 localparam S_BROADCAST_SEND       = 3'b11;
-localparam S_BROADCAST_NO_PACKET  = 3'b100;
+localparam S_BROADCAST_NO_PROPOSAL  = 3'b100;
 
 reg [2:0] state;
 reg [7:0]   r_target_node_id;
@@ -179,6 +179,21 @@ wire last_missing_error = tx_allowed_pulse && (beat_index_reg == LAST_BEAT_INDEX
 wire last_early_error = tx_allowed_pulse && (beat_index_reg != LAST_BEAT_INDEX) && buf_tx_last;
 wire [31:0] error_inc = (be_error ? 32'd1 : 32'd0) + (last_missing_error ? 32'd1 : 32'd0) + (last_early_error ? 32'd1 : 32'd0);
 
+function [7:0] count_ones;
+    input [P_NODE_COUNT-1:0] vec;
+    integer idx;
+    begin
+        count_ones = 0;
+        for (idx = 0; idx < P_NODE_COUNT; idx = idx + 1) begin
+            if (vec[idx]) begin
+                count_ones = count_ones + 1;
+            end
+        end
+    end
+endfunction
+
+wire [7:0] knowledge_count = (count_ones(i_knowledge_vec) - 1);
+reg [7:0] nodes_completed_reg;
 
 //------------------------------------------------
 //         State Machine
@@ -211,6 +226,7 @@ always @(posedge clk) begin
                 m_axis_tid <= 8'b0; // Use target node ID as TID
                 m_axis_tdest <= 8'b0; // Use target node ID as DEST
                 last_packet_reached <= 1'b0;
+                nodes_completed_reg <= 8'b0;
                 
                 r_target_node_id <= 0;
                 buf_rd_ready <= 1'b0;
@@ -222,6 +238,7 @@ always @(posedge clk) begin
             end
 
             S_BROADCAST_START: begin
+                buf_rd_ready <= 1'b0;
                 if (!i_tx_allowed) begin
                     state <= S_IDLE; // Abort if not allowed
                     m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
@@ -231,17 +248,14 @@ always @(posedge clk) begin
                     m_axis_tuser <= 1'b0;
                     m_axis_tid <= 8'b0;
                     m_axis_tdest <= 8'b0;
-                    buf_rd_ready <= 1'b0;
                     last_packet_reached <= 1'b0;
                 end
                 else begin
-                    buf_rd_ready <= 1'b1; // Ready to read from buffer
                     state <= S_BROADCAST_WAIT;
                 end
             end
 
             S_BROADCAST_WAIT: begin
-                buf_rd_ready <= 1'b0; // Stop reading from buffer
                 if (!i_tx_allowed) begin
                     state <= S_IDLE; // Abort if not allowed
                     m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
@@ -252,12 +266,20 @@ always @(posedge clk) begin
                     m_axis_tid <= 8'b0;
                     m_axis_tdest <= 8'b0;
                     last_packet_reached <= 1'b0;
+                    buf_rd_ready <= 1'b0;
                 end else if (m_axis_tready && buf_rd_valid) begin
+                    if (r_target_node_id != P_NODE_ID && (i_knowledge_vec[r_target_node_id])) begin
+                        buf_rd_ready <= 1'b1;                
+                    end else begin
+                        buf_rd_ready <= 1'b0;
+                    end
+                    
                     state <= S_BROADCAST_SEND;
                 end
             end
 
             S_BROADCAST_SEND: begin
+                buf_rd_ready <= 1'b0;
                 if (!i_tx_allowed) begin
                     state <= S_IDLE; // Abort if not allowed
                     m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
@@ -267,7 +289,6 @@ always @(posedge clk) begin
                     m_axis_tuser <= 1'b0;
                     m_axis_tid <= 8'b0;
                     m_axis_tdest <= 8'b0;
-                    buf_rd_ready <= 1'b0;
                     last_packet_reached <= 1'b0;
                 end else begin
                     if (r_target_node_id != P_NODE_ID && (i_knowledge_vec[r_target_node_id])) begin
@@ -277,6 +298,8 @@ always @(posedge clk) begin
                         m_axis_tuser <= P_NODE_ID;
                         m_axis_tid <= P_NODE_ID;
                         m_axis_tdest <= r_target_node_id[3:0];
+                        nodes_completed_reg <= nodes_completed_reg + 1;
+                        m_axis_tlast <= 1'b1;
                     end else begin
                         m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
                         m_axis_tkeep <= {P_KEEP_WIDTH{1'b0}};
@@ -287,37 +310,35 @@ always @(posedge clk) begin
                     end
 
 
-                    if (r_target_node_id + 1 == P_NODE_COUNT) begin
+                    if (r_target_node_id + 1 == P_NODE_COUNT || (nodes_completed_reg + 1) == knowledge_count) begin
                         // Finished broadcasting
                         state <= S_IDLE;
                         r_target_node_id <= 0;
-                        m_axis_tlast <= 1'b1; // Last flit for this transmission
+                        // m_axis_tlast <= 1'b1; // Last flit for this transmission
                     end else if ((r_target_node_id + 1) == P_NODE_ID && P_NODE_ID + 1 < P_NODE_COUNT) begin
                         // Skip self node
                         r_target_node_id <= r_target_node_id + 2;
-                        buf_rd_ready <= 1'b1; // Ready to read from buffer for the next node
                         state <= S_BROADCAST_WAIT;
-                        m_axis_tlast <= 1'b0;
+                        // m_axis_tlast <= 1'b0;
                     end else if ((r_target_node_id + 1) == P_NODE_ID && P_NODE_ID + 1 == P_NODE_COUNT) begin
                         // Skip self node and finish broadcasting
                         state <= S_IDLE;
-                        m_axis_tlast <= 1'b1; // Last flit for this transmission
+                        // m_axis_tlast <= 1'b1; // Last flit for this transmission
                         r_target_node_id <= 0;
                     end else if (buf_tx_last && r_target_node_id + 1 < P_NODE_COUNT) begin
                         r_target_node_id <= r_target_node_id + 1;
-                        state <= S_BROADCAST_NO_PACKET;
-                        m_axis_tlast <= 1'b0;
+                        state <= S_BROADCAST_NO_PROPOSAL;
+                        // m_axis_tlast <= 1'b0;
                     end else begin
                         // Wait for the next cycle to send the next packet
                         r_target_node_id <= r_target_node_id + 1;
-                        buf_rd_ready <= 1'b1; // Ready to read from buffer for the next node
                         state <= S_BROADCAST_WAIT;
-                        m_axis_tlast <= 1'b0;
+                        // m_axis_tlast <= 1'b0;
                     end
                 end
             end
 
-            S_BROADCAST_NO_PACKET: begin
+            S_BROADCAST_NO_PROPOSAL: begin
                 if (!i_tx_allowed) begin
                     state <= S_IDLE; // Abort if not allowed
                     m_axis_tdata <= {P_DATA_WIDTH{1'b0}};
@@ -336,16 +357,17 @@ always @(posedge clk) begin
                         m_axis_tuser <= P_NODE_ID;
                         m_axis_tid <= P_NODE_ID;
                         m_axis_tdest <= r_target_node_id[3:0];
+                        nodes_completed_reg <= nodes_completed_reg + 1;
                     end
 
-                    if (r_target_node_id + 1 == P_NODE_COUNT) begin
+                    if (r_target_node_id + 1 == P_NODE_COUNT || (nodes_completed_reg + 1) == knowledge_count) begin
                         // Finished broadcasting
                         state <= S_IDLE;
                         r_target_node_id <= 0;
                         m_axis_tlast <= 1'b1;
                     end else if ((r_target_node_id + 1) == P_NODE_ID && P_NODE_ID + 1 < P_NODE_COUNT) begin
                         // Skip self node
-                        state <= S_BROADCAST_NO_PACKET;
+                        state <= S_BROADCAST_NO_PROPOSAL;
                         r_target_node_id <= r_target_node_id + 2;
                         m_axis_tlast <= 1'b0;
                     end else if ((r_target_node_id + 1) == P_NODE_ID && P_NODE_ID + 1 == P_NODE_COUNT) begin
@@ -356,7 +378,7 @@ always @(posedge clk) begin
                     end else begin
                         // Wait for the next cycle to send the next packet
                         r_target_node_id <= r_target_node_id + 1;
-                        state <= S_BROADCAST_NO_PACKET;
+                        state <= S_BROADCAST_NO_PROPOSAL;
                         m_axis_tlast <= 1'b0;
                     end
                 end
