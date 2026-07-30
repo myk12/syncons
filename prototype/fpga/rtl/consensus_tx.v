@@ -310,7 +310,7 @@ always @(posedge clk) begin
                     end
 
 
-                    if (r_target_node_id + 1 == P_NODE_COUNT || (nodes_completed_reg + 1) == knowledge_count) begin
+                    if (r_target_node_id + 1 == P_NODE_COUNT || ((nodes_completed_reg + 1) == knowledge_count && r_target_node_id != P_NODE_ID && (i_knowledge_vec[r_target_node_id]))) begin
                         // Finished broadcasting
                         state <= S_IDLE;
                         r_target_node_id <= 0;
