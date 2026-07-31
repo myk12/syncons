@@ -50,6 +50,8 @@ module consensus_tx_arbiter #(
     output reg [AXIS_IF_TX_DEST_WIDTH-1:0]      m_axis_tx_tdest
 );
 
+assign s_axis_cons_tx_tready = m_axis_tx_tready;
+assign s_axis_dma_tx_tready = m_axis_tx_tready;
 
 always @(*) begin
     m_axis_tx_tdata = {AXIS_DATA_WIDTH{1'b0}};
@@ -60,9 +62,6 @@ always @(*) begin
     m_axis_tx_tdest = {AXIS_IF_TX_DEST_WIDTH{1'b0}};
     m_axis_tx_tuser = {AXIS_TX_USER_WIDTH{1'b0}};
 
-    s_axis_cons_tx_tready = 1'b0;
-    s_axis_dma_tx_tready = 1'b0;
-
     if (s_axis_cons_tx_tvalid) begin
             m_axis_tx_tdata = s_axis_cons_tx_tdata;
             m_axis_tx_tkeep = s_axis_cons_tx_tkeep;
@@ -71,7 +70,6 @@ always @(*) begin
             m_axis_tx_tid = s_axis_cons_tx_tid;
             m_axis_tx_tdest = s_axis_cons_tx_tdest;
             m_axis_tx_tuser = s_axis_cons_tx_tuser;
-            s_axis_cons_tx_tready = m_axis_tx_tready;
         end
     else if (s_axis_dma_tx_tvalid) begin
             m_axis_tx_tdata = s_axis_dma_tx_tdata;
@@ -81,7 +79,6 @@ always @(*) begin
             m_axis_tx_tid = s_axis_dma_tx_tid;
             m_axis_tx_tdest = s_axis_dma_tx_tdest;
             m_axis_tx_tuser = s_axis_dma_tx_tuser;
-            s_axis_dma_tx_tready = m_axis_tx_tready;
     end
 end
 

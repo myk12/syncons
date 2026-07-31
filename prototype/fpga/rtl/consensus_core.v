@@ -21,7 +21,8 @@ module consensus_core #(
     parameter P_SLOT_DURATION_NS = 4000,  // 4 microseconds
     parameter P_GUARD_NS = 50,          // 50 nanoseconds
     parameter PTP_TS_FMT_TOD = 1,
-    parameter PTP_TS_WIDTH = PTP_TS_FMT_TOD ? 96 : 64
+    parameter PTP_TS_WIDTH = PTP_TS_FMT_TOD ? 96 : 64,
+    parameter PTP_SIM = 1
 ) (
     // clock and reset
     input wire                                  clk,
@@ -34,13 +35,13 @@ module consensus_core #(
     // data interface
     input wire                                  i_rx_valid,
     input wire [7:0]                            i_rx_node_id,
-    input wire [7:0]                            i_rx_sound_bitmap, // bitmap of who the sender node sees as alive
+    input wire [P_NODE_COUNT-1:0]               i_rx_sound_bitmap, // bitmap of who the sender node sees as alive
     // input wire [P_LOG_ITEM_LEN*8-1:0]           i_rx_payload,
-    input wire [63:0]                           i_rx_run_id,
-    input wire [63:0]                           i_rx_round_id,
+    input wire [31:0]                           i_rx_run_id,
+    input wire [31:0]                           i_rx_round_id,
 
     // control plane
-    input wire [63:0]                           i_ctrl_run_id,
+    input wire [31:0]                           i_ctrl_run_id,
     input wire [P_NODE_COUNT-1:0]               i_ctrl_membership, // bitmap of current membership
     input wire                                  i_ctrl_activate, // signal to activate the consensus core (e.g., after configuration)
     input wire                                  i_ctrl_reboot, // signal to reboot the node
@@ -86,16 +87,29 @@ reg [P_NODE_COUNT-1:0]              s_commit_sound_bitmap;
 // reg [P_LOG_ITEM_LEN*8-1:0]          s_commit_proposals [0:P_NODE_COUNT-1];
 reg [P_NODE_COUNT-1:0]              s_commit_sound_matrix [0:P_NODE_COUNT-1];
 
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_0 = s_evidence_sound_matrix[0];
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_1 = s_evidence_sound_matrix[1];
+wire [P_NODE_COUNT-1:0] dbg_evidence_matrix_2 = s_evidence_sound_matrix[2];
+
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_0 = s_commit_sound_matrix[0];
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_1 = s_commit_sound_matrix[1];
+wire [P_NODE_COUNT-1:0] dbg_commit_matrix_2 = s_commit_sound_matrix[2];
+
 // scheduler signals
 reg [63:0]  current_round_id; // same as round_id
 reg         new_slot_pulse;
-
-reg [PTP_TS_WIDTH-1:0] i_ptp_start_time_ns;
 reg last_enable;
+
+wire [31:0] ptp_ns;
+wire [47:0] ptp_sec;
+
+assign ptp_ns = PTP_SIM ? {16'b0, ptp_sync_ts[31:16]} : ptp_sync_ts[47:16];
+assign ptp_sec = PTP_SIM ? {32'b0, ptp_sync_ts[47:32]} : ptp_sync_ts[95:48];
 
 wire enable_rising_edge = i_global_enable && !last_enable;
 
-reg [PTP_TS_WIDTH-1:0] r_next_boundary;
+reg [31:0] r_next_boundary_ns;
+reg [47:0] r_next_boundary_sec;
 reg [63:0] r_slot_id_counter;
 reg [PTP_TS_WIDTH-1:0] slot_offset;
 
@@ -180,9 +194,10 @@ endfunction
 // scheduler logic
 always @(posedge clk) begin
     if (rst) begin
-        r_next_boundary     <= ~0;  // no boundary until enabled
+        r_next_boundary_ns  <= ~0;  // no boundary until enabled
+        r_next_boundary_sec <= ~0;
         r_slot_id_counter   <= 0;
-        current_round_id     <= 0;
+        current_round_id    <= 0;
         new_slot_pulse      <= 0;
         last_enable         <= 0;
         
@@ -194,25 +209,43 @@ always @(posedge clk) begin
         new_slot_pulse <= 0;  // default: no pulse
 
         if (!i_global_enable) begin
-            r_next_boundary     <= ~0;
+            r_next_boundary_ns  <= ~0;
+            r_next_boundary_sec <= ~0;
             r_slot_id_counter   <= 0;
-            current_round_id     <= 0;
+            current_round_id    <= 0;
             o_tx_allowed        <= 0;
             o_rx_enabled        <= 0;
         end else if (enable_rising_edge) begin
-            r_next_boundary <= ptp_sync_ts + P_SLOT_DURATION_NS;  // next slot after now
+            if (ptp_ns + P_SLOT_DURATION_NS >= 32'd1000_000_000) begin
+                r_next_boundary_ns <= (ptp_ns + P_SLOT_DURATION_NS) - 32'd1000_000_000;
+                r_next_boundary_sec <= ptp_sec + 1;
+            end else begin
+                r_next_boundary_ns <= ptp_ns + P_SLOT_DURATION_NS;
+                r_next_boundary_sec <= ptp_sec; 
+            end 
+            
             r_slot_id_counter  <= 0;
-        end else if (ptp_sync_ts >= r_next_boundary) begin
+        end else if (ptp_sec >= r_next_boundary_sec && ptp_ns >= r_next_boundary_ns) begin
             // Crossed a slot boundary
             new_slot_pulse      <= 1;
             current_round_id     <= r_slot_id_counter;
             r_slot_id_counter   <= r_slot_id_counter + 1;
-            r_next_boundary     <= r_next_boundary + P_SLOT_DURATION_NS;
+            if (r_next_boundary_ns + P_SLOT_DURATION_NS >= 32'd1000_000_000) begin
+                r_next_boundary_ns <= (r_next_boundary_ns + P_SLOT_DURATION_NS) - 32'd1000_000_000;
+                r_next_boundary_sec <= ptp_sec + 1;
+            end else begin
+                r_next_boundary_ns <= r_next_boundary_ns + P_SLOT_DURATION_NS;
+                r_next_boundary_sec <= r_next_boundary_sec;
+            end
         end
         
         // TX/RX gating: based on offset within current slot
         // Compute offset as ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS)
-        slot_offset <= ptp_sync_ts - (r_next_boundary - P_SLOT_DURATION_NS);
+        if (ptp_sec < r_next_boundary_sec) begin
+            slot_offset <= (32'd1000_000_000 + ptp_ns) - (r_next_boundary_ns - P_SLOT_DURATION_NS);
+        end else begin
+            slot_offset <= ptp_ns - (r_next_boundary_ns - P_SLOT_DURATION_NS);
+        end
         
         o_tx_allowed <= (slot_offset >= P_TX_START && slot_offset < P_TX_DONE);
         o_rx_enabled <= (slot_offset >= P_GUARD_NS);
@@ -297,14 +330,6 @@ always @(posedge clk) begin
     end else begin
         case (state)
             S_IDLE: begin
-                if (i_ctrl_activate) begin
-                    eval_counter <= 0;
-                    activation_pending <= 1'b1;
-                    config_run_id                   <= i_ctrl_run_id;
-                    config_installed_membership     <= i_ctrl_membership;
-                    o_system_halt <= 1'b0;
-                    r_current_sound_set             <= i_ctrl_membership; // initialize sound set to membership at start
-                end
                 if ((activation_pending || i_ctrl_activate) && round_boundary) begin
                     s_curr_round_id             <= current_round_id;
                     s_curr_installed_membership <= i_ctrl_membership;
@@ -315,7 +340,18 @@ always @(posedge clk) begin
                     //     if (i != P_NODE_ID) s_curr_proposals[i] <= 0;
                     // end
                     activation_pending <= 1'b0;
+                    
+                    s_evidence_sound_bitmap            <= i_ctrl_membership;
+                    s_evidence_sound_matrix[P_NODE_ID] <= i_ctrl_membership;
+                end else if (i_ctrl_activate) begin
+                    eval_counter <= 0;
+                    activation_pending <= 1'b1;
+                    config_run_id                   <= i_ctrl_run_id;
+                    config_installed_membership     <= i_ctrl_membership;
+                    o_system_halt <= 1'b0;
+                    r_current_sound_set             <= i_ctrl_membership; // initialize sound set to membership at start
                 end
+                
             end
 
             S_COLLECT: begin
@@ -373,7 +409,7 @@ always @(posedge clk) begin
                     
                     s_evidence_round_id <= s_curr_round_id;
                     s_evidence_installed_membership <= s_curr_installed_membership;
-                    s_evidence_sound_bitmap <= f_derived_sound_set;
+                    s_evidence_sound_bitmap <= (f_derived_sound_set == 0) ? r_current_sound_set : f_derived_sound_set;
                     // for (i = 0; i < P_NODE_COUNT; i = i + 1) begin
                     //     s_evidence_proposals[i] <= s_curr_proposals[i];
                     // end
@@ -476,7 +512,8 @@ assign commit_set = agreed_row_valid ? (s_commit_sound_matrix[P_NODE_ID]) : {P_N
 
 assign halt = (!agreed_row_valid) || (!(|commit_set)) || (!derived_sound_set[P_NODE_ID]) || ((derived_sound_set & r_current_sound_set) != derived_sound_set);
 
-assign o_tx_knowledge_vec = (agreed_row_valid && eval_counter >= 2) ? derived_sound_set : {P_NODE_COUNT{1'b0}};
+// assign o_tx_knowledge_vec = (agreed_row_valid && eval_counter >= 2) ? derived_sound_set : {P_NODE_COUNT{1'b0}};
+assign o_tx_knowledge_vec = s_evidence_sound_bitmap;
 
 // forwarded values
 assign f_membership_count = count_ones(s_evidence_installed_membership);

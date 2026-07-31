@@ -10,7 +10,13 @@ module consensus_rx #(
     parameter P_DEST_WIDTH = 8,
     parameter P_USER_WIDTH = 1,
     parameter P_ETHERNET_TYPE = 16'h88B5,
-    parameter integer   P_LOG_ITEM_LEN  = 32      // 40 bytes default, smaller to fit room for other fields in the test frame
+    parameter integer   P_LOG_ITEM_LEN  = 32,      // 40 bytes default, smaller to fit room for other fields in the test frame
+    
+    parameter RAM_SEG_COUNT = 2,
+    parameter RAM_SEG_DATA_WIDTH = 256*2/RAM_SEG_COUNT,
+    parameter RAM_SEG_BE_WIDTH = RAM_SEG_DATA_WIDTH/8,
+
+    parameter COMMIT_SLOT_BYTES = 1024
 ) (
     // clock and reset
     input wire                          clk,
@@ -21,23 +27,29 @@ module consensus_rx #(
     input wire [63:0]                   i_current_run_id,
     input wire [63:0]                   i_current_round_id,
 
+    // Commit stream output to commit_buffer
+    output reg [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]       commit_in_data,
+    output reg [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]         commit_in_be,
+    output reg                                              commit_in_valid,
+    output reg                                              commit_in_last,
+    input  wire                                             commit_in_ready,
+
     // AXI Stream Slave Input
     input wire [P_DATA_WIDTH-1:0]       s_axis_tdata,
     input wire [P_KEEP_WIDTH-1:0]       s_axis_tkeep,
     input wire                          s_axis_tvalid,
     output wire                         s_axis_tready,
     input wire                          s_axis_tlast,
-    input wire [P_ID_WIDTH-1:0]         s_axis_if_rx_tid,
-    input wire [P_DEST_WIDTH-1:0]       s_axis_if_rx_tdest,
+    input wire [P_ID_WIDTH-1:0]         s_axis_tid,
+    input wire [P_DEST_WIDTH-1:0]       s_axis_tdest,
     input wire [P_USER_WIDTH-1:0]       s_axis_tuser,
 
     // Parsed Output to Consensus Module
     output reg                              o_rx_valid,     // high when a valid packet is parsed
     output reg [7:0]                        o_rx_node_id,   // node ID extracted from packet
-    output reg [7:0]                        o_rx_sound_bitmap, // sound bitmap extracted from packet
-    output reg [P_LOG_ITEM_LEN*8-1:0]       o_rx_payload,
-    output reg [63:0]                       o_rx_run_id,
-    output reg [63:0]                       o_rx_round_id
+    output reg [P_NODE_COUNT-1:0]           o_rx_sound_bitmap, // sound bitmap extracted from packet
+    output reg [31:0]                       o_rx_run_id,
+    output reg [31:0]                       o_rx_round_id
 );
 
 //------------------------------------------------
@@ -46,6 +58,24 @@ module consensus_rx #(
 // The consensus model must run at the line rate of incoming packets.
 // Therefore, we assume that the AXI Stream input is always ready to accept data.
 assign s_axis_tready = 1'b1; // Always ready to accept data
+
+localparam integer RAM_BEAT_BYTES =
+    RAM_SEG_COUNT * RAM_SEG_BE_WIDTH;
+
+localparam integer COMMIT_SLOT_BEAT_COUNT =
+    COMMIT_SLOT_BYTES / RAM_BEAT_BYTES;
+
+localparam integer COMMIT_SLOT_BEAT_INDEX_WIDTH =
+    COMMIT_SLOT_BEAT_COUNT > 1 ? $clog2(COMMIT_SLOT_BEAT_COUNT) : 1;
+
+localparam [COMMIT_SLOT_BEAT_INDEX_WIDTH-1:0] COMMIT_LAST_BEAT_INDEX =
+    COMMIT_SLOT_BEAT_COUNT - 1;
+
+localparam integer DATA_WORD_COUNT =
+    RAM_SEG_COUNT * RAM_SEG_DATA_WIDTH / 32;
+
+localparam [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0] FULL_BE =
+    {RAM_SEG_COUNT*RAM_SEG_BE_WIDTH{1'b1}};
 
 //------------------------------------------------
 //         Packet Parsing Logic
@@ -83,7 +113,7 @@ wire [(P_LOG_ITEM_LEN*8)-1:0] w_rx_payload = {
 };
 
 // wire [7:0] w_rx_node_id = s_axis_if_rx_tid; // may be used instead
-wire [7:0] w_rx_dest_id = s_axis_if_rx_tdest;
+wire [7:0] w_rx_dest_id = s_axis_tdest;
 
 //------------------------------------------------
 //         Flitering Logic
@@ -105,6 +135,12 @@ always @(*) begin // consensus core checks round and run ID
     end
 end
 
+reg [7:0] prev_node;
+reg [63:0] prev_round_id;
+wire new_packet;
+
+assign new_packet = (prev_node != w_rx_node_id) ? 1'b1 : (prev_round_id != w_rx_round_id ? 1'b1 : 1'b0);
+
 //------------------------------------------------
 //         Output Logic
 //------------------------------------------------
@@ -113,30 +149,54 @@ always @(posedge clk) begin
         o_rx_valid <= 0;
         o_rx_node_id <= 0;
         o_rx_sound_bitmap <= 0;
-        o_rx_payload <= 0;
+        commit_in_data <= 0;
+        commit_in_be <= 0;
         o_rx_run_id <= 0;
         o_rx_round_id <= 0;
+        commit_in_valid <= 0;
+        commit_in_last <= 0;
+        prev_node <= {8{1'b1}};
+        prev_round_id <= {64{1'b1}};
     end else if (!i_rx_enabled) begin
         o_rx_valid <= 0;
         o_rx_node_id <= 0;
         o_rx_sound_bitmap <= 0;
-        o_rx_payload <= 0;
+        commit_in_data <= 0;
+        commit_in_be <= 0;
         o_rx_run_id <= 0;
         o_rx_round_id <= 0;
+        commit_in_valid <= 0;
+        commit_in_last <= 0;
+        prev_node <= {8{1'b1}};
+        prev_round_id <= {64{1'b1}};
     end else begin
         o_rx_valid <= r_packet_valid;
         if (r_packet_valid) begin
             o_rx_node_id <= w_rx_node_id;
             o_rx_sound_bitmap <= w_rx_knowledge_vec;
-            o_rx_payload <= w_rx_payload;
             o_rx_run_id <= w_rx_run_id;
             o_rx_round_id <= w_rx_round_id;
         end else begin
             o_rx_node_id <= 0;
             o_rx_sound_bitmap <= 0;
-            o_rx_payload <= 0;
             o_rx_run_id <= 0;
             o_rx_round_id <= 0;
+        end
+
+        if (commit_in_ready && r_packet_valid && new_packet) begin
+            commit_in_data <= w_rx_payload;
+            commit_in_be <= FULL_BE;
+            commit_in_last <= 1;
+            commit_in_valid <= r_packet_valid;
+            prev_node <= w_rx_node_id;
+            prev_round_id <= w_rx_round_id;
+        end else begin
+            commit_in_data <= 0;
+            commit_in_be <= 0;
+            commit_in_valid <= 0;
+            commit_in_last <= 0;
+            prev_node <= prev_node;
+            prev_round_id <= prev_round_id;
         end
     end
 end

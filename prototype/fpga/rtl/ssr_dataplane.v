@@ -83,6 +83,7 @@ module ssr_dataplane #
     parameter PTP_TS_ENABLE     = 1,
     parameter PTP_TS_FMT_TOD    = 1,
     parameter PTP_TS_WIDTH      = PTP_TS_FMT_TOD ? 96 : 64,
+    parameter PTP_SIM           = 1,
     parameter TX_TAG_WIDTH      = 16,
     parameter MAX_TX_SIZE       = 9214,
     parameter MAX_RX_SIZE       = 9214,
@@ -101,8 +102,8 @@ module ssr_dataplane #
     parameter RAM_SEG_ADDR_WIDTH = RAM_ADDR_WIDTH - $clog2(RAM_SEG_COUNT * RAM_SEG_BE_WIDTH),
     parameter RAM_PIPELINE = 2,
 
-    parameter PROPOSAL_SLOT_BYTES = 1024, // size of a proposal slot in bytes
-    parameter PROPOSAL_SLOT_COUNT = 64,
+    parameter RAM_BUFF_SLOT_BYTES = 1024, // size of a proposal slot in bytes
+    parameter RAM_BUFF_SLOT_COUNT = 64,
 
     // Ethernet interface configuration (interface)
     parameter AXIS_IF_DATA_WIDTH = 512,
@@ -114,14 +115,10 @@ module ssr_dataplane #
     parameter AXIS_IF_TX_USER_WIDTH = 1,
     parameter AXIS_IF_RX_USER_WIDTH = 1,
 
-    // Ring Buffer
-    parameter RING_BUFFER_ADDR_WIDTH = 8,
-
     // Consensus Parameters
     parameter P_NODE_ID = 0,
     parameter P_NODE_COUNT = 3,
     parameter P_LOG_ITEM_LEN = 32,
-    parameter P_MEMBERSHIP_EPOCH_WIDTH = 64,
     parameter P_SYS_CLOCK_FREQ_HZ = 250_000_000,
     parameter P_SLOT_DURATION_NS = 4000,
     parameter P_GUARD_NS = 50,
@@ -288,7 +285,10 @@ localparam [REG_ADDR_WIDTH-1:0] RBB_COMMIT_QUEUE    = 24'h002000; // base addres
 localparam [REG_ADDR_WIDTH-1:0] RBB_CONSENSUS       = 24'h003000; // base address of consensus register block
 
 // DMA proposal queue
-localparam RAM_SEL_RPOP = 0;
+localparam RAM_SEL_PROP = 0;
+localparam DMA_TAG_PROP = 0;
+localparam RAM_SEL_COMMIT = 1;
+localparam DMA_TAG_COMMIT = 0;
 
 // check configuration parameters
 initial begin
@@ -394,15 +394,7 @@ wire [31:0] proposal_sink_error_count;
 //                 Tx Modules
 // --------------------------------------------------------------
 
-wire                            tx_rbuffer_wr_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_wr_data;
-wire                            tx_rbuffer_rd_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   tx_rbuffer_rd_data;
-wire                            tx_rbuffer_empty;
-wire                            tx_rbuffer_full;
-wire                            tx_start;
 wire                            tx_allowed;
-wire [P_LOG_ITEM_LEN-1:0]       tx_propose;
 wire [P_NODE_COUNT-1:0]         tx_knowledge_vec;
 
 wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_tx_tdata;
@@ -427,18 +419,11 @@ wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        axis_cons_rx_tdest;
 wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        axis_cons_rx_tuser;
 
 wire rx_enabled;
-wire [P_NODE_ID-1:0] rx_node_id;
+wire [7:0] rx_node_id;
 wire [P_NODE_COUNT-1:0] rx_sound_bitmap;
-wire [P_LOG_ITEM_LEN-1:0] rx_payload;
 wire [P_LOG_ITEM_LEN-1:0] rx_run_id;
 wire [P_LOG_ITEM_LEN-1:0] rx_round_id;
 
-wire                            rx_rbuffer_wr_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   rx_rbuffer_wr_data;
-wire                            rx_rbuffer_rd_en;
-wire [AXIS_IF_DATA_WIDTH-1:0]   rx_rbuffer_rd_data;
-wire                            rx_rbuffer_empty;
-wire                            rx_rbuffer_full;
 wire                            rx_valid;
 
 // --------------------------------------------------------------
@@ -592,6 +577,12 @@ always @* begin
     reg_rd_data_consensus_next    = 0;
     reg_rd_ack_consensus_next     = 1'b0;
 
+    global_enable_reg_next      = global_enable_reg;
+    ctrl_run_id_reg_next        = ctrl_run_id_reg;
+    ctrl_membership_reg_next    = ctrl_membership_reg;
+    ctrl_activate_reg_next      = ctrl_activate_reg;
+    ctrl_reboot_reg_next        = ctrl_reboot_reg;
+
 if (reg_wr_en_consensus && !reg_wr_ack_consensus_reg) begin
         // write operation - decode address and update registers
         reg_wr_ack_consensus_next = 1'b1; // acknowledge the write
@@ -696,14 +687,6 @@ end
 //                          TX datapath
 // ==============================================================
 
-// wires for proposal_dam_reader -> proposal_buffer
-wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]    proposal_buf_wr_be;
-wire [RAM_SEG_COUNT*RAM_SEG_ADDR_WIDTH-1:0]  proposal_buf_wr_addr;
-wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]  proposal_buf_wr_data;
-wire [RAM_SEG_COUNT-1:0]                     proposal_buf_wr_valid;
-wire [RAM_SEG_COUNT-1:0]                     proposal_buf_wr_ready;
-wire [RAM_SEG_COUNT-1:0]                     proposal_buf_wr_done;
-
 wire                            proposal_tail_slot_valid;
 wire [RAM_ADDR_WIDTH-1:0]       proposal_tail_slot_addr;
 wire [DMA_LEN_WIDTH-1:0]        proposal_tail_slot_len;
@@ -719,212 +702,6 @@ wire                                            proposal_buf_rd_ready;
 wire                                            proposal_buf_tx_last;
 wire [DMA_LEN_WIDTH-1:0]                        proposal_buf_tx_len;
 
-// sink control
-wire proposal_sink_enable;
-wire proposal_sink_clear;
-
-assign proposal_sink_enable = 1;
-assign proposal_sink_clear = 0;
-
-// ------------------------------------------------
-//      instance of proposal DMA reader
-// ------------------------------------------------
-proposal_dma_reader #(
-    .REG_ADDR_WIDTH(REG_ADDR_WIDTH),
-    .REG_DATA_WIDTH(REG_DATA_WIDTH),
-    .RB_BASE_ADDR(RBB_PROPOSAL_QUEUE),
-
-    .DMA_ADDR_WIDTH(DMA_ADDR_WIDTH),
-    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
-    .DMA_TAG_WIDTH(DMA_TAG_WIDTH),
-
-    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
-    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
-    .RAM_SEG_COUNT(RAM_SEG_COUNT),
-    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
-    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
-    .RAM_PIPELINE(RAM_PIPELINE),
-
-    .RAM_SEL_PROP(RAM_SEL_PROP),
-    .DMA_TAG_PROP(DMA_TAG_PROP),
-
-    .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES)
-)
-proposal_dma_reader_inst (
-    .clk(clk),
-    .rst(rst),
-
-    // CSR interface
-    .reg_wr_en(reg_wr_en_proposal_queue),
-    .reg_wr_addr(reg_wr_addr),
-    .reg_wr_data(reg_wr_data),
-    .reg_wr_strb(reg_wr_strb),
-    .reg_wr_wait(reg_wr_wait_proposal_queue),
-    .reg_wr_ack(reg_wr_ack_proposal_queue),
-
-    .reg_rd_en(reg_rd_en_proposal_queue),
-    .reg_rd_addr(reg_rd_addr),
-    .reg_rd_data(reg_rd_data_proposal_queue),
-    .reg_rd_wait(reg_rd_wait_proposal_queue),
-    .reg_rd_ack(reg_rd_ack_proposal_queue),
-
-    // DMA read descriptor output interface
-    .m_axis_dma_read_desc_dma_addr(m_axis_data_dma_read_desc_dma_addr),
-    .m_axis_dma_read_desc_ram_sel(m_axis_data_dma_read_desc_ram_sel),
-    .m_axis_dma_read_desc_ram_addr(m_axis_data_dma_read_desc_ram_addr),
-    .m_axis_dma_read_desc_len(m_axis_data_dma_read_desc_len),
-    .m_axis_dma_read_desc_tag(m_axis_data_dma_read_desc_tag),
-    .m_axis_dma_read_desc_valid(m_axis_data_dma_read_desc_valid),
-    .m_axis_dma_read_desc_ready(m_axis_data_dma_read_desc_ready),
-
-    // DMA read descriptor status input interface
-    .s_axis_dma_read_desc_status_tag(s_axis_data_dma_read_desc_status_tag),
-    .s_axis_dma_read_desc_status_error(s_axis_data_dma_read_desc_status_error),
-    .s_axis_dma_read_desc_status_valid(s_axis_data_dma_read_desc_status_valid),
-
-    // RAM write interface
-    .dma_ram_wr_cmd_sel(data_dma_ram_wr_cmd_sel),
-    .dma_ram_wr_cmd_be(data_dma_ram_wr_cmd_be),
-    .dma_ram_wr_cmd_addr(data_dma_ram_wr_cmd_addr),
-    .dma_ram_wr_cmd_data(data_dma_ram_wr_cmd_data),
-    .dma_ram_wr_cmd_valid(data_dma_ram_wr_cmd_valid),
-    .dma_ram_wr_cmd_ready(data_dma_ram_wr_cmd_ready),
-    .dma_ram_wr_done(data_dma_ram_wr_done),
-
-    // proposal buffer write interface
-    .buf_wr_be(proposal_buf_wr_be),
-    .buf_wr_data(proposal_buf_wr_data),
-    .buf_wr_addr(proposal_buf_wr_addr),
-    .buf_wr_valid(proposal_buf_wr_valid),
-    .buf_wr_ready(proposal_buf_wr_ready),
-    .buf_wr_done(proposal_buf_wr_done),
-
-    // proposal tail slot interface
-    .tail_slot_valid(proposal_tail_slot_valid),
-    .tail_slot_addr(proposal_tail_slot_addr),
-    .tail_slot_len(proposal_tail_slot_len),
-
-    // proposal tail commit interface
-    .commit_valid(proposal_tail_commit_valid),
-    .commit_ready(proposal_tail_commit_ready)
-);
-
-
-// -------------------------------------------------
-//     instance of proposal buffer
-// -------------------------------------------------
-proposal_buffer #(
-    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
-
-    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
-    .RAM_SEG_COUNT(RAM_SEG_COUNT),
-    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
-    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
-    .RAM_PIPELINE(RAM_PIPELINE),
-
-    .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES),
-    .PROPOSAL_SLOT_COUNT(PROPOSAL_SLOT_COUNT)
-)
-proposal_buffer_inst (
-    .clk(clk),
-    .rst(rst),
-
-    // write interface from proposal DMA reader
-    .buf_wr_be(proposal_buf_wr_be),
-    .buf_wr_data(proposal_buf_wr_data),
-    .buf_wr_addr(proposal_buf_wr_addr),
-    .buf_wr_valid(proposal_buf_wr_valid),
-    .buf_wr_ready(proposal_buf_wr_ready),
-    .buf_wr_done(proposal_buf_wr_done),
-
-    // proposal tail slot interface
-    .tail_slot_valid(proposal_tail_slot_valid),
-    .tail_slot_addr(proposal_tail_slot_addr),
-    .tail_slot_len(proposal_tail_slot_len),
-
-    // proposal tail commit interface
-    .tail_commit_valid(proposal_tail_commit_valid),
-    .tail_commit_ready(proposal_tail_commit_ready),
-
-    // read interface to tx engine
-    .buf_rd_data(proposal_buf_rd_data),
-    .buf_rd_be(proposal_buf_rd_be),
-    .buf_rd_valid(proposal_buf_rd_valid),
-    .buf_rd_ready(proposal_buf_rd_ready),
-    .buf_tx_last(proposal_buf_tx_last),
-    .buf_tx_len(proposal_buf_tx_len)
-);
-
-// -------------------------------------------------
-//     instance of proposal buffer sink
-// -------------------------------------------------
-proposal_buffer_sink #(
-    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
-
-    .RAM_SEG_COUNT(RAM_SEG_COUNT),
-    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
-    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
-
-    .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES)
-)
-proposal_buffer_sink_inst (
-    .clk(clk),
-    .rst(rst),
-
-    // read interface from proposal buffer
-    .buf_rd_data(proposal_buf_rd_data),
-    .buf_rd_be(proposal_buf_rd_be),
-    .buf_rd_valid(proposal_buf_rd_valid),
-    .buf_rd_ready(proposal_buf_rd_ready),
-    .buf_tx_last(proposal_buf_tx_last),
-    .buf_tx_len(proposal_buf_tx_len),
-
-    // Control/status outputs
-    .sink_enable(proposal_sink_enable),
-    .sink_clear(proposal_sink_clear),
-
-    .sink_slot_count(proposal_sink_slot_count),
-    .sink_beat_count(proposal_sink_beat_count),
-    .sink_error_count(proposal_sink_error_count)
-);
-
-// ==============================================================
-//                          RX datapath
-// ==============================================================
-assign reg_wr_wait_commit_queue = 0;
-assign reg_wr_ack_commit_queue = reg_wr_en_commit_queue; // acknowledge immediately, no wait states
-
-assign reg_rd_wait_commit_queue = 0;
-assign reg_rd_ack_commit_queue = reg_rd_en_commit_queue; // acknowledge immediately, no wait states
-assign reg_rd_data_commit_queue = 0; // no data to return for commit queue
-
-assign m_axis_data_dma_write_desc_dma_addr = 0;
-assign m_axis_data_dma_write_desc_ram_sel = 0;
-assign m_axis_data_dma_write_desc_ram_addr = 0;
-assign m_axis_data_dma_write_desc_imm = 0;
-assign m_axis_data_dma_write_desc_imm_en = 0;
-assign m_axis_data_dma_write_desc_len = 0;
-assign m_axis_data_dma_write_desc_tag = 0;
-assign m_axis_data_dma_write_desc_valid = 0;
-
-// --------------------------------------------------------------
-//                 Tx Modules
-// --------------------------------------------------------------
-ring_buffer #(
-    .ADDR_WIDTH(RING_BUFFER_ADDR_WIDTH),
-    .DATA_WIDTH(AXIS_IF_DATA_WIDTH)
-)
-ring_buffer_tx (
-    .clk(clk),
-    .rst(rst),
-    .wr_en(tx_rbuffer_wr_en),
-    .wr_data(tx_rbuffer_wr_data),
-    .rd_en(tx_rbuffer_rd_en),
-    .rd_data(tx_rbuffer_rd_data),
-    .empty(tx_rbuffer_empty),
-    .full(tx_rbuffer_full)
-);
-
 consensus_tx #(
     .P_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
     .P_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
@@ -937,12 +714,18 @@ consensus_tx #(
     .clk(clk),
     .rst(rst),
 
+    .buf_rd_data(proposal_buf_rd_data),
+    .buf_rd_be(proposal_buf_rd_be),
+    .buf_rd_valid(proposal_buf_rd_valid),
+    .buf_rd_ready(proposal_buf_rd_ready),
+    .buf_tx_last(proposal_buf_tx_last),
+    .buf_tx_len(proposal_buf_tx_len),
+
     .i_tx_allowed(tx_allowed),
     .i_current_slot_id(current_slot_id),
     .i_current_run_id(current_run_id),
     .i_knowledge_vec(tx_knowledge_vec),
-    .i_propose(tx_propose),
-    .o_tx_start(tx_start),
+    .o_tx_start(),
 
     .m_axis_tdata(axis_cons_tx_tdata),
     .m_axis_tkeep(axis_cons_tx_tkeep),
@@ -951,11 +734,12 @@ consensus_tx #(
     .m_axis_tuser(axis_cons_tx_tuser),
     .m_axis_tid(axis_cons_tx_tid),
     .m_axis_tdest(axis_cons_tx_tdest),
-    .m_axis_tready(axis_cons_tx_tready)
-);
+    .m_axis_tready(axis_cons_tx_tready),
 
-assign tx_rbuffer_rd_en = tx_start;
-assign tx_propose = tx_rbuffer_rd_data;
+    .tx_slot_count(proposal_sink_slot_count),
+    .tx_beat_count(proposal_sink_beat_count),
+    .tx_error_count(proposal_sink_error_count)
+);
 
 consensus_tx_arbiter #(
     .AXIS_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
@@ -963,8 +747,7 @@ consensus_tx_arbiter #(
     .AXIS_TX_USER_WIDTH(AXIS_IF_TX_USER_WIDTH),
     .AXIS_IF_TX_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
     .AXIS_IF_TX_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH)
-)
-(
+) consensus_tx_arbiter_inst (
     .s_axis_cons_tx_tdata(axis_cons_tx_tdata),
     .s_axis_cons_tx_tkeep(axis_cons_tx_tkeep),
     .s_axis_cons_tx_tvalid(axis_cons_tx_tvalid),
@@ -1005,26 +788,277 @@ consensus_tx_arbiter #(
     .m_axis_tx_tdest(m_axis_if_tx_tdest)
 );
 
-// --------------------------------------------------------------
-//                 Rx Modules
-// --------------------------------------------------------------
-ring_buffer #(
-    .ADDR_WIDTH(RING_BUFFER_ADDR_WIDTH),
-    .DATA_WIDTH(AXIS_IF_DATA_WIDTH)
+
+// ------------------------------------------------
+//      instance of proposal DMA reader
+// ------------------------------------------------
+proposal_dma_reader #(
+    .REG_ADDR_WIDTH(REG_ADDR_WIDTH),
+    .REG_DATA_WIDTH(REG_DATA_WIDTH),
+    .RB_BASE_ADDR(RBB_PROPOSAL_QUEUE),
+
+    .DMA_ADDR_WIDTH(DMA_ADDR_WIDTH),
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+    .DMA_TAG_WIDTH(DMA_TAG_WIDTH),
+
+    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
+    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
+
+    .RAM_SEL_PROP(RAM_SEL_PROP),
+    .DMA_TAG_PROP(DMA_TAG_PROP),
+    .PROPOSAL_SLOT_BYTES(RAM_BUFF_SLOT_BYTES)
 )
-ring_buffer_rx (
+proposal_dma_reader_inst (
     .clk(clk),
     .rst(rst),
-    .wr_en(rx_rbuffer_wr_en),
-    .wr_data(rx_rbuffer_wr_data),
-    .rd_en(rx_rbuffer_rd_en),
-    .rd_data(rx_rbuffer_rd_data),
-    .empty(rx_rbuffer_empty),
-    .full(rx_rbuffer_full)
+
+    // CSR interface
+    .reg_wr_en(reg_wr_en_proposal_queue),
+    .reg_wr_addr(reg_wr_addr),
+    .reg_wr_data(reg_wr_data),
+    .reg_wr_strb(reg_wr_strb),
+    .reg_wr_wait(reg_wr_wait_proposal_queue),
+    .reg_wr_ack(reg_wr_ack_proposal_queue),
+
+    .reg_rd_en(reg_rd_en_proposal_queue),
+    .reg_rd_addr(reg_rd_addr),
+    .reg_rd_data(reg_rd_data_proposal_queue),
+    .reg_rd_wait(reg_rd_wait_proposal_queue),
+    .reg_rd_ack(reg_rd_ack_proposal_queue),
+
+    // DMA read descriptor output interface
+    .m_axis_dma_read_desc_dma_addr(m_axis_data_dma_read_desc_dma_addr),
+    .m_axis_dma_read_desc_ram_sel(m_axis_data_dma_read_desc_ram_sel),
+    .m_axis_dma_read_desc_ram_addr(m_axis_data_dma_read_desc_ram_addr),
+    .m_axis_dma_read_desc_len(m_axis_data_dma_read_desc_len),
+    .m_axis_dma_read_desc_tag(m_axis_data_dma_read_desc_tag),
+    .m_axis_dma_read_desc_valid(m_axis_data_dma_read_desc_valid),
+    .m_axis_dma_read_desc_ready(m_axis_data_dma_read_desc_ready),
+
+    // DMA read descriptor status input interface
+    .s_axis_dma_read_desc_status_tag(s_axis_data_dma_read_desc_status_tag),
+    .s_axis_dma_read_desc_status_error(s_axis_data_dma_read_desc_status_error),
+    .s_axis_dma_read_desc_status_valid(s_axis_data_dma_read_desc_status_valid),
+
+    // proposal tail slot interface
+    .tail_slot_valid(proposal_tail_slot_valid),
+    .tail_slot_addr(proposal_tail_slot_addr),
+    .tail_slot_len(proposal_tail_slot_len),
+
+    // proposal tail commit interface
+    .commit_valid(proposal_tail_commit_valid),
+    .commit_ready(proposal_tail_commit_ready)
 );
 
-assign rx_rbuffer_wr_en = rx_valid;
-assign rx_rbuffer_wr_data = rx_payload;
+// -------------------------------------------------
+//     instance of proposal buffer
+// -------------------------------------------------
+proposal_buffer #(
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+
+    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
+    .RAM_SEL_PROP(RAM_SEL_PROP),
+
+    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
+    .RAM_SEG_COUNT(RAM_SEG_COUNT),
+    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
+    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
+    .RAM_SEG_ADDR_WIDTH(RAM_SEG_ADDR_WIDTH),
+    .RAM_PIPELINE(RAM_PIPELINE),
+
+    .PROPOSAL_SLOT_BYTES(RAM_BUFF_SLOT_BYTES),
+    .PROPOSAL_SLOT_COUNT(RAM_BUFF_SLOT_COUNT)
+)
+proposal_buffer_inst (
+    .clk(clk),
+    .rst(rst),
+
+    // Direct DMA RAM write endpoint
+    .dma_ram_wr_cmd_sel(data_dma_ram_wr_cmd_sel),
+    .dma_ram_wr_cmd_be(data_dma_ram_wr_cmd_be),
+    .dma_ram_wr_cmd_addr(data_dma_ram_wr_cmd_addr),
+    .dma_ram_wr_cmd_data(data_dma_ram_wr_cmd_data),
+    .dma_ram_wr_cmd_valid(data_dma_ram_wr_cmd_valid),
+    .dma_ram_wr_cmd_ready(data_dma_ram_wr_cmd_ready),
+    .dma_ram_wr_done(data_dma_ram_wr_done),
+
+    // Writable tail slot
+    .tail_slot_valid(proposal_tail_slot_valid),
+    .tail_slot_addr(proposal_tail_slot_addr),
+    .tail_slot_len(proposal_tail_slot_len),
+
+    // Commit completed slot
+    .tail_commit_valid(proposal_tail_commit_valid),
+    .tail_commit_ready(proposal_tail_commit_ready),
+
+    // Stream to tx_engine/sink
+    .buf_rd_data(proposal_buf_rd_data),
+    .buf_rd_be(proposal_buf_rd_be),
+    .buf_rd_valid(proposal_buf_rd_valid),
+    .buf_rd_ready(proposal_buf_rd_ready),
+    .buf_tx_last(proposal_buf_tx_last),
+    .buf_tx_len(proposal_buf_tx_len)
+);
+
+
+// -------------------------------------------------
+//     instance of proposal buffer sink
+// -------------------------------------------------
+// proposal_buffer_sink #(
+//     .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+
+//     .RAM_SEG_COUNT(RAM_SEG_COUNT),
+//     .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
+//     .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
+
+//     .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES)
+// )
+// proposal_buffer_sink_inst (
+//     .clk(clk),
+//     .rst(rst),
+
+//     // read interface from proposal buffer
+//     .buf_rd_data(proposal_buf_rd_data),
+//     .buf_rd_be(proposal_buf_rd_be),
+//     .buf_rd_valid(proposal_buf_rd_valid),
+//     .buf_rd_ready(proposal_buf_rd_ready),
+//     .buf_tx_last(proposal_buf_tx_last),
+//     .buf_tx_len(proposal_buf_tx_len),
+
+//     // Control/status outputs
+//     .sink_enable(proposal_sink_enable),
+//     .sink_clear(proposal_sink_clear),
+
+//     .sink_slot_count(proposal_sink_slot_count),
+//     .sink_beat_count(proposal_sink_beat_count),
+//     .sink_error_count(proposal_sink_error_count)
+// );
+
+// ==============================================================
+//                          RX datapath
+// ==============================================================
+assign reg_wr_ack_commit_queue = reg_wr_en_commit_queue; // acknowledge immediately, no wait states
+
+assign reg_rd_ack_commit_queue = reg_rd_en_commit_queue; // acknowledge immediately, no wait states
+assign reg_rd_data_commit_queue = 0; // no data to return for commit queue
+
+wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]     commit_in_data;
+wire [RAM_SEG_COUNT*RAM_SEG_BE_WIDTH-1:0]       commit_in_be;
+wire                                            commit_in_valid;
+wire                                            commit_in_ready;
+wire                                            commit_in_last;
+
+wire                                            commit_head_slot_valid;
+wire [RAM_ADDR_WIDTH-1:0]                       commit_head_slot_addr;
+wire [DMA_LEN_WIDTH-1:0]                        commit_head_slot_len;
+
+wire                                            commit_head_slot_pop_valid;
+wire                                            commit_head_slot_pop_ready;
+
+wire [31:0]                                     commit_buffer_error_count;
+
+commit_buffer #(
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+
+    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
+    // .RAM_SEL_COMMIT(RAM_SEL_COMMIT),
+    
+    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH),
+    .RAM_SEG_COUNT(RAM_SEG_COUNT),
+    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
+    .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
+    .RAM_SEG_ADDR_WIDTH(RAM_SEG_ADDR_WIDTH),
+    .RAM_PIPELINE(RAM_PIPELINE),
+
+    .COMMIT_SLOT_BYTES(RAM_BUFF_SLOT_BYTES),
+    .COMMIT_SLOT_COUNT(RAM_BUFF_SLOT_COUNT)
+)
+commit_buffer_inst (
+    .clk(clk),
+    .rst(rst),
+
+    // write interface from commit generator
+    .commit_in_data(commit_in_data),
+    .commit_in_be(commit_in_be),
+    .commit_in_valid(commit_in_valid),
+    .commit_in_ready(commit_in_ready),
+    .commit_in_last(commit_in_last),
+
+    // commit head slot interface
+    .head_slot_valid(commit_head_slot_valid),
+    .head_slot_addr(commit_head_slot_addr),
+    .head_slot_len(commit_head_slot_len),
+
+    // commit head slot pop interface
+    .head_slot_pop_valid(commit_head_slot_pop_valid),
+    .head_slot_pop_ready(commit_head_slot_pop_ready),
+
+    // control/status outputs
+    .commit_error_count(commit_buffer_error_count),
+
+    .dma_ram_rd_cmd_sel(data_dma_ram_rd_cmd_sel),
+    .dma_ram_rd_cmd_addr(data_dma_ram_rd_cmd_addr),
+    .dma_ram_rd_cmd_valid(data_dma_ram_rd_cmd_valid),
+    .dma_ram_rd_cmd_ready(data_dma_ram_rd_cmd_ready),
+
+    .dma_ram_rd_resp_data(data_dma_ram_rd_resp_data),
+    .dma_ram_rd_resp_valid(data_dma_ram_rd_resp_valid),
+    .dma_ram_rd_resp_ready(data_dma_ram_rd_resp_ready)
+);
+
+commit_dma_writer #(
+    .REG_ADDR_WIDTH(REG_ADDR_WIDTH),
+    .REG_DATA_WIDTH(REG_DATA_WIDTH),
+    .REG_STRB_WIDTH(REG_STRB_WIDTH),
+    .RB_BASE_ADDR(RBB_COMMIT_QUEUE),
+
+    .DMA_ADDR_WIDTH(DMA_ADDR_WIDTH),
+    .DMA_IMM_ENABLE(DMA_IMM_ENABLE),
+    .DMA_IMM_WIDTH(DMA_IMM_WIDTH),
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+    .DMA_TAG_WIDTH(DMA_TAG_WIDTH),
+
+    .RAM_SEL_WIDTH(RAM_SEL_WIDTH),
+    .RAM_ADDR_WIDTH(RAM_ADDR_WIDTH)
+)
+commit_dma_writer_inst (
+    .clk(clk),
+    .rst(rst),
+
+    .reg_wr_addr(reg_wr_addr),
+    .reg_wr_data(reg_wr_data),
+    .reg_wr_strb(reg_wr_strb),
+    .reg_wr_en(reg_wr_en_commit_queue),
+    .reg_wr_wait(reg_wr_wait_commit_queue),
+    .reg_wr_ack(reg_wr_ack_commit_queue),
+
+    .reg_rd_addr(reg_rd_addr),
+    .reg_rd_en(reg_rd_en_commit_queue),
+    .reg_rd_data(reg_rd_data_commit_queue),
+    .reg_rd_wait(reg_rd_wait_commit_queue),
+    .reg_rd_ack(reg_rd_ack_commit_queue),
+
+    .m_axis_dma_write_desc_dma_addr(m_axis_data_dma_write_desc_dma_addr),
+    .m_axis_dma_write_desc_ram_sel(m_axis_data_dma_write_desc_ram_sel),
+    .m_axis_dma_write_desc_ram_addr(m_axis_data_dma_write_desc_ram_addr),
+    .m_axis_dma_write_desc_imm(m_axis_data_dma_write_desc_imm),
+    .m_axis_dma_write_desc_imm_en(m_axis_data_dma_write_desc_imm_en),
+    .m_axis_dma_write_desc_len(m_axis_data_dma_write_desc_len),
+    .m_axis_dma_write_desc_tag(m_axis_data_dma_write_desc_tag),
+    .m_axis_dma_write_desc_valid(m_axis_data_dma_write_desc_valid),
+    .m_axis_dma_write_desc_ready(m_axis_data_dma_write_desc_ready),
+
+    .s_axis_dma_write_desc_status_tag(s_axis_data_dma_write_desc_status_tag),
+    .s_axis_dma_write_desc_status_error(s_axis_data_dma_write_desc_status_error),
+    .s_axis_dma_write_desc_status_valid(s_axis_data_dma_write_desc_status_valid),
+
+    .head_slot_valid(commit_head_slot_valid),
+    .head_slot_addr(commit_head_slot_addr),
+    .head_slot_len(commit_head_slot_len),
+
+    .head_slot_pop_valid(commit_head_slot_pop_valid),
+    .head_slot_pop_ready(commit_head_slot_pop_ready)
+);
 
 consensus_rx #(
     .P_NODE_COUNT(P_NODE_COUNT),
@@ -1041,8 +1075,14 @@ consensus_rx #(
     .rst(rst),
 
     .i_rx_enabled(rx_enabled),
-    .i_current_slot_id(current_slot_id),
+    .i_current_round_id(current_slot_id),
     .i_current_run_id(current_run_id),
+
+    .commit_in_data(commit_in_data),
+    .commit_in_be(commit_in_be),
+    .commit_in_valid(commit_in_valid),
+    .commit_in_last(commit_in_last),
+    .commit_in_ready(commit_in_ready),
 
     .s_axis_tdata(axis_cons_rx_tdata),
     .s_axis_tkeep(axis_cons_rx_tkeep),
@@ -1056,19 +1096,20 @@ consensus_rx #(
     .o_rx_valid(rx_valid),
     .o_rx_node_id(rx_node_id),
     .o_rx_sound_bitmap(rx_sound_bitmap),
-    .o_rx_payload(rx_payload),
     .o_rx_run_id(rx_run_id),
     .o_rx_round_id(rx_round_id)
 );
 
 consensus_rx_splitter #(
-    .AXIS_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
-    .AXIS_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
-    .AXIS_RX_USER_WIDTH(AXIS_IF_RX_USER_WIDTH),
+    .AXIS_IF_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
+    .AXIS_IF_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
+    .AXIS_IF_RX_USER_WIDTH(AXIS_IF_RX_USER_WIDTH),
     .AXIS_IF_RX_ID_WIDTH(AXIS_IF_RX_ID_WIDTH),
     .AXIS_IF_RX_DEST_WIDTH(AXIS_IF_RX_DEST_WIDTH)
-)
-(
+) consensus_rx_splitter_inst (
+    .clk(clk),
+    .rst(rst),
+
     .s_axis_if_rx_tdata(s_axis_if_rx_tdata),
     .s_axis_if_rx_tkeep(s_axis_if_rx_tkeep),
     .s_axis_if_rx_tvalid(s_axis_if_rx_tvalid),
@@ -1105,11 +1146,11 @@ consensus_core #(
     .P_NODE_ID(P_NODE_ID),
     .P_LOG_ITEM_LEN(P_LOG_ITEM_LEN),
     .P_DATA_WIDTH(P_DATA_WIDTH),
-    .P_MEMBERSHIP_EPOCH_WIDTH(P_MEMBERSHIP_EPOCH_WIDTH),
     .P_SYS_CLOCK_FREQ_HZ(P_SYS_CLOCK_FREQ_HZ),
     .P_SLOT_DURATION_NS(P_SLOT_DURATION_NS),
     .P_GUARD_NS(P_GUARD_NS),
-    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD)
+    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD),
+    .PTP_SIM(PTP_SIM)
 ) consensus_core_inst (
     .clk(clk),
     .rst(rst),
@@ -1127,7 +1168,7 @@ consensus_core #(
 
     // control plane
     .i_ctrl_run_id(ctrl_run_id_reg),
-    .i_ctrl_membership(ctrl_membership_reg),
+    .i_ctrl_membership(ctrl_membership_reg[P_NODE_COUNT-1:0]),
     .i_ctrl_activate(ctrl_activate_reg),
     .i_ctrl_reboot(ctrl_reboot_reg),
 
