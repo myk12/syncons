@@ -118,11 +118,13 @@ SyncResult sync_result_from_proto(
     const control::v1::SyncResult& input
 )
 {
-    return SyncResult{
-        .synchronized = input.synchronized(),
-        .estimated_offset_ns = input.estimated_offset_ns(),
-        .uncertainty_ns = input.uncertainty_ns()
-    };
+    SyncResult result{};
+    result.synchronized = input.synchronized();
+    result.time_sync.estimated_offset_ns = input.estimated_offset_ns();
+    result.time_sync.uncertainty_ns = input.uncertainty_ns();
+    result.round_length_ns = input.round_length_ns();
+
+    return result;
 }
 
 void sync_result_to_proto(
@@ -135,59 +137,57 @@ void sync_result_to_proto(
     }
 
     output->set_synchronized(input.synchronized);
-    output->set_estimated_offset_ns(input.estimated_offset_ns);
-    output->set_uncertainty_ns(input.uncertainty_ns);
+    output->set_estimated_offset_ns(input.time_sync.estimated_offset_ns);
+    output->set_uncertainty_ns(input.time_sync.uncertainty_ns);
+    output->set_round_length_ns(input.round_length_ns);
 }
 
-StartConfig start_config_from_proto(
-    const control::v1::StartConfig& input
+RunConfig run_config_from_proto(
+    const control::v1::RunConfig& input
 )
 {
-    StartConfig result{
-        .first_round_id = input.first_round_id(),
-        .first_round_timestamp_ns = input.first_round_timestamp_ns(),
-        .first_run_id = input.first_run_id(),
+    return RunConfig{
+        .run_id = input.run_id(),
+        .start_time_ns = input.start_time_ns(),
+        .replica_num = input.replica_num(),
+        .round_length_ns = input.round_length_ns()
     };
-
-    result.validate();
-
-    return result;
 }
 
-void start_config_to_proto(
-    const StartConfig& input,
-    control::v1::StartConfig* const output
+void run_config_to_proto(
+    const RunConfig& input,
+    control::v1::RunConfig* const output
 )
 {
     if (output == nullptr) {
         throw std::invalid_argument("output pointer is null");
     }
 
-    output->set_first_round_id(static_cast<uint32_t>(input.first_round_id));
-    output->set_first_round_timestamp_ns(input.first_round_timestamp_ns);
-    output->set_first_run_id(static_cast<uint32_t>(input.first_run_id));
+    output->set_run_id(input.run_id);
+    output->set_start_time_ns(input.start_time_ns);
+    output->set_replica_num(input.replica_num);
+    output->set_round_length_ns(input.round_length_ns);
+
 }
 
-control::v1::NodeState node_state_to_proto(
-    const NodeAgentState state
+control::v1::AgentState agent_state_to_proto(
+    const AgentState state
 ) noexcept
 {
     switch (state) {
-        case NodeAgentState::Idle:
-            return control::v1::NODE_STATE_IDLE;
-        case NodeAgentState::Ready:
-            return control::v1::NODE_STATE_READY;
-        case NodeAgentState::Running:
-            return control::v1::NODE_STATE_RUNNING;
-        case NodeAgentState::Stopped:
-            return control::v1::NODE_STATE_STOPPED;
-        case NodeAgentState::Failed:
-            return control::v1::NODE_STATE_FAILED;
+        case AgentState::Idle:
+            return control::v1::AGENT_STATE_IDLE;
+        case AgentState::Configured:
+            return control::v1::AGENT_STATE_CONFIGURED;
+        case AgentState::Running:
+            return control::v1::AGENT_STATE_RUNNING;
+        case AgentState::Stopped:
+            return control::v1::AGENT_STATE_STOPPED;
         default:
-            return control::v1::NODE_STATE_UNSPECIFIED;
+            return control::v1::AGENT_STATE_UNSPECIFIED;
     }
 
-    return control::v1::NODE_STATE_UNSPECIFIED;
+    return control::v1::AGENT_STATE_UNSPECIFIED;
 }
 
 control::v1::DataplaneState dataplane_state_to_proto(
@@ -197,18 +197,14 @@ control::v1::DataplaneState dataplane_state_to_proto(
     switch (state) {
         case DataplaneState::Closed:
             return control::v1::DATAPLANE_STATE_CLOSED;
-        case DataplaneState::Ready:
-            return control::v1::DATAPLANE_STATE_READY;
-        case DataplaneState::Reset:
-            return control::v1::DATAPLANE_STATE_RESET;
+        case DataplaneState::Open:
+            return control::v1::DATAPLANE_STATE_OPEN;
         case DataplaneState::Configured:
             return control::v1::DATAPLANE_STATE_CONFIGURED;
-        case DataplaneState::Synchronized:
-            return control::v1::DATAPLANE_STATE_SYNCHRONIZED;
         case DataplaneState::Running:
             return control::v1::DATAPLANE_STATE_RUNNING;
-        case DataplaneState::Stopped:
-            return control::v1::DATAPLANE_STATE_STOPPED;
+        case DataplaneState::Halted:
+            return control::v1::DATAPLANE_STATE_HALTED;
         default:
             return control::v1::DATAPLANE_STATE_UNSPECIFIED;
     }
@@ -227,7 +223,6 @@ void dataplane_status_to_proto(
 
     output->set_state(dataplane_state_to_proto(input.state));
     output->set_config_valid(input.config_valid);
-    output->set_sync_valid(input.sync_valid);
     output->set_running(input.running);
 }
 

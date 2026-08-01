@@ -1,6 +1,7 @@
 #pragma once
 
-#include "ssr/dataplane_backend.hpp"
+#include "ssr/ssr.h"
+#include "ssr/agent_dataplane_backend.hpp"
 
 #include <optional>
 
@@ -20,39 +21,20 @@ public:
     MockDataplaneBackend() = default;
 
     void open() override;
-
     void close() noexcept override;
-
     void reset() override;
-
-    void configure(const SsrConfig& config) override;
-
-    void synchronize(const SyncResult& result) override;
-
-    void start(const StartConfig& config) override;
-
+    void configure(const RunConfig& config) override;
+    void start() override;
     void stop() override;
 
     [[nodiscard]]
     DataplaneStatus status() const override;
 
     [[nodiscard]]
-    const std::optional<SsrConfig>& config() const noexcept
+    const std::optional<RunConfig>& config() const noexcept
     {
         return config_;
-    }
-
-    [[nodiscard]]
-    const std::optional<SyncResult>& sync_result() const noexcept
-    {
-        return sync_result_;
-    }
-
-    [[nodiscard]]
-    const std::optional<StartConfig>& start_config() const noexcept
-    {
-        return start_config_;
-    }
+    };
 
     // Inject a one-shot failure
     void fail_next(MockFailurePoint point) noexcept;
@@ -62,11 +44,8 @@ public:
 private:
     void require_open() const;
 
-    DataplaneState state_ = DataplaneState::Closed;
-
-    std::optional<SsrConfig> config_;
-    std::optional<SyncResult> sync_result_;
-    std::optional<StartConfig> start_config_;
+    DataplaneStatus dataplane_status_;
+    std::optional<RunConfig> config_;
 
     void maybe_fail(MockFailurePoint point);
     std::optional<MockFailurePoint> failure_point_;

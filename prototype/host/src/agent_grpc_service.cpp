@@ -1,9 +1,5 @@
-#include "ssr/node_agent_service.hpp"
-
-#include "ssr/cluster.hpp"
-#include "ssr/dataplane_backend.hpp"
+#include "ssr/agent_grpc_service.hpp"
 #include "ssr/proto_conversion.hpp"
-#include "ssr/coordinator_event_client.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -22,7 +18,7 @@ grpc::Status exception_to_grpc_status(
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, e.what());
     }
 
-    if (dynamic_cast<const ClusterControlError*>(&e) != nullptr) {
+    if (dynamic_cast<const std::runtime_error*>(&e) != nullptr) {
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION, e.what());
     }
 
@@ -35,54 +31,18 @@ grpc::Status exception_to_grpc_status(
 
 } // namespace
 
-NodeAgentServiceImpl::NodeAgentServiceImpl(
-    NodeAgent& node_agent
+AgentRPCServiceImpl::AgentRPCServiceImpl(
+    SSRAgent& agent
 ) noexcept
-    : node_agent_(node_agent)
+    : agent_(agent)
 {
 }
 
-NodeAgentServiceImpl::NodeAgentServiceImpl(
-    NodeAgent& node_agent,
-    CoordinatorEventClient& event_client
-) noexcept
-    : node_agent_(node_agent),
-      event_client_(&event_client)
-{
-}
-
-void NodeAgentServiceImpl::report_event(
-    control::v1::NodeEventKind event_kind,
-    std::string_view detail
-) noexcept
-{
-    if (event_client_ == nullptr) {
-        return;
-    }
-
-    static_cast<void>(event_client_->report(
-        event_kind,
-        node_agent_.state(),
-        node_agent_.dataplane_status(),
-        node_agent_.session_id(),
-        detail
-    ));
-}
-
-void NodeAgentServiceImpl::report_exception(
-    const std::exception& e
-)
-{
-    if (dynamic_cast<const DataplaneError*>(&e) != nullptr) {
-        report_event(control::v1::NODE_EVENT_DATAPLANE_ERROR, e.what());
-    }
-}
-
-grpc::Status NodeAgentServiceImpl::validate_target_node(
+grpc::Status AgentRPCServiceImpl::validate_target_node(
     std::uint32_t target_node_id
 ) const
 {
-    if (target_node_id != static_cast<std::uint32_t>(node_agent_.node_id())) {
+    if (target_node_id != static_cast<std::uint32_t>(agent_.node_id())) {
         return grpc::Status(
             grpc::StatusCode::FAILED_PRECONDITION,
             "Target node ID does not match this node's ID"
@@ -92,36 +52,28 @@ grpc::Status NodeAgentServiceImpl::validate_target_node(
     return grpc::Status::OK;
 }
 
-void NodeAgentServiceImpl::fill_reply(
-    control::v1::NodeReply* reply
+void AgentRPCServiceImpl::fill_reply(
+    control::v1::AgentReply* reply
 ) const
 {
     if (reply == nullptr) {
         throw std::invalid_argument("reply pointer is null");
     }
 
-    reply->set_node_id(static_cast<std::uint32_t>(node_agent_.node_id()));
-    reply->set_state(node_state_to_proto(node_agent_.state()));
+    reply->set_node_id(static_cast<std::uint32_t>(agent_.node_id()));
+    reply->set_state(agent_state_to_proto(agent_.state()));
 
-    dataplane_status_to_proto(node_agent_.dataplane_status(), reply->mutable_dataplane_status());
-
-    if (const auto& session_id_opt = node_agent_.session_id(); session_id_opt.has_value()) {
-        session_id_to_proto(session_id_opt.value(), reply->mutable_session_id());
-    }
-
-    if (const auto& session_id = node_agent_.session_id(); session_id.has_value()) {
-        session_id_to_proto(session_id.value(), reply->mutable_session_id());
-    } else {
-        reply->clear_session_id();
-    }
+    dataplane_status_to_proto(agent_.backend().status(), reply->mutable_dataplane_status());
+    session_id_to_proto(agent_.session_id(), reply->mutable_session_id());
 }
 
-grpc::Status NodeAgentServiceImpl::Prepare(
+grpc::Status AgentRPCServiceImpl::Prepare(
     grpc::ServerContext* context,
     const control::v1::PrepareRequest* request,
-    control::v1::NodeReply* reply
+    control::v1::AgentReply* reply
 )
 {
+    printf("AgentRPCServiceImpl::Prepare called with target_node_id: %u\n", request ? request->target_node_id() : 0);
     static_cast<void>(context); // Unused parameter
 
     if (request == nullptr || reply == nullptr) {
@@ -132,7 +84,7 @@ grpc::Status NodeAgentServiceImpl::Prepare(
         return target_status;
     }
 
-    if (!request->has_session_id() || !request->has_cluster_config() || !request->has_sync_result()) {
+    if (!request->has_session_id() || !request->has_run_config()) {
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Missing required fields in request");
     }
 
@@ -140,14 +92,11 @@ grpc::Status NodeAgentServiceImpl::Prepare(
 
     try {
         const auto session_id = session_id_from_proto(request->session_id());
-        const auto cluster_config = cluster_config_from_proto(request->cluster_config());
-        const auto sync_result = sync_result_from_proto(request->sync_result());
+        const auto run_config = run_config_from_proto(request->run_config());
 
-        node_agent_.prepare(session_id, cluster_config, sync_result);
+        agent_.prepare(session_id, run_config);
 
         fill_reply(reply);
-
-        report_event(control::v1::NODE_EVENT_STATE_CHANGED, "Prepare completed successfully");
         
         return grpc::Status::OK;
     } catch (const std::exception& e) {
@@ -155,48 +104,13 @@ grpc::Status NodeAgentServiceImpl::Prepare(
     }
 }
 
-grpc::Status NodeAgentServiceImpl::Start(
+grpc::Status AgentRPCServiceImpl::Start(
     grpc::ServerContext* context,
     const control::v1::StartRequest* request,
-    control::v1::NodeReply* reply
+    control::v1::AgentReply* reply
 )
 {
-    static_cast<void>(context); // Unused parameter
-
-    if (request == nullptr || reply == nullptr) {
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Request or reply pointer is null");
-    }
-
-    if (const auto target_status = validate_target_node(request->target_node_id()); !target_status.ok()) {
-        return target_status;
-    }
-
-    if (!request->has_session_id() || !request->has_start_config()) {
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Missing required fields in request");
-    }
-
-    std::scoped_lock lock(mutex_);
-
-    try {
-        const auto session_id = session_id_from_proto(request->session_id());
-        const auto start_config = start_config_from_proto(request->start_config());
-
-        node_agent_.start(session_id, start_config);
-
-        fill_reply(reply);
-        report_event(control::v1::NODE_EVENT_STATE_CHANGED, "Start completed successfully");
-        return grpc::Status::OK;
-    } catch (const std::exception& e) {
-        return exception_to_grpc_status(e);
-    }
-}
-
-grpc::Status NodeAgentServiceImpl::Stop(
-    grpc::ServerContext* context,
-    const control::v1::StopRequest* request,
-    control::v1::NodeReply* reply
-)
-{
+    printf("AgentRPCServiceImpl::Start called with target_node_id: %u\n", request ? request->target_node_id() : 0);
     static_cast<void>(context); // Unused parameter
 
     if (request == nullptr || reply == nullptr) {
@@ -216,22 +130,22 @@ grpc::Status NodeAgentServiceImpl::Stop(
     try {
         const auto session_id = session_id_from_proto(request->session_id());
 
-        node_agent_.stop(session_id);
+        agent_.start(session_id);
 
         fill_reply(reply);
-        report_event(control::v1::NODE_EVENT_STATE_CHANGED, "Stop completed successfully");
         return grpc::Status::OK;
     } catch (const std::exception& e) {
         return exception_to_grpc_status(e);
     }
 }
 
-grpc::Status NodeAgentServiceImpl::Reset(
-    grpc::ServerContext* const context,
-    const control::v1::ResetRequest* const request,
-    control::v1::NodeReply* const reply
+grpc::Status AgentRPCServiceImpl::Stop(
+    grpc::ServerContext* context,
+    const control::v1::StopRequest* request,
+    control::v1::AgentReply* reply
 )
 {
+    printf("AgentRPCServiceImpl::Stop called with target_node_id: %u\n", request ? request->target_node_id() : 0);
     static_cast<void>(context); // Unused parameter
 
     if (request == nullptr || reply == nullptr) {
@@ -242,28 +156,28 @@ grpc::Status NodeAgentServiceImpl::Reset(
         return target_status;
     }
 
-    // abort session is the existing unconditional local reset operation
-    std::scoped_lock lock(mutex_);
-    node_agent_.abort_session();
-
-    if (node_agent_.state() != NodeAgentState::Idle) {
-        return grpc::Status(grpc::StatusCode::INTERNAL, "Failed to reset node agent state to Idle");
+    if (!request->has_session_id()) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Missing required fields in request");
     }
 
-    try {
-        fill_reply(reply);
-        report_event(control::v1::NODE_EVENT_STATE_CHANGED, "Reset completed successfully");
+    std::scoped_lock lock(mutex_);
 
+    try {
+        const auto session_id = session_id_from_proto(request->session_id());
+
+        agent_.stop(session_id);
+
+        fill_reply(reply);
         return grpc::Status::OK;
     } catch (const std::exception& e) {
         return exception_to_grpc_status(e);
     }
 }
 
-grpc::Status NodeAgentServiceImpl::GetStatus(
+grpc::Status AgentRPCServiceImpl::GetStatus(
     grpc::ServerContext* context,
     const control::v1::GetStatusRequest* request,
-    control::v1::NodeReply* reply
+    control::v1::AgentReply* reply
 )
 {
     static_cast<void>(context); // Unused parameter

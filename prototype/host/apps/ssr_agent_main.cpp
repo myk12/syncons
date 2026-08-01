@@ -1,7 +1,7 @@
-#include "ssr/coordinator_event_client.hpp"
-#include "ssr/mock_dataplane.hpp"
-#include "ssr/node_agent.hpp"
-#include "ssr/node_agent_service.hpp"
+#include "ssr/ssr.h"
+#include "ssr/agent.hpp"
+#include "ssr/agent_grpc_service.hpp"
+#include "ssr/agent_dataplane_backend_mock.hpp"
 
 #include <grpcpp/grpcpp.h>
 
@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <fstream>
 
 namespace {
 
@@ -30,14 +31,12 @@ void print_usage_and_exit(
     std::cerr
         << "Usage:\n"
         << "  " << program 
-        << " --node-id <node_id>"
+        << " --id <node_id>"
         << " --listen <ip:port>"
-        << " --coordinator <ip:port>\n"
         << "Example:\n"
         << "  " << program
-        << " --node-id 1"
-        << " --listen 0.0.0.0:50051"
-        << " --coordinator 127.0.0.1:50052\n";
+        << " --id 1"
+        << " --listen 0.0.0.0:50051";
 
     std::exit(exit_code);
 }
@@ -63,12 +62,10 @@ AgentOptions parse_options(
             return argv[index];
         };
 
-        if (arg == "--node-id") {
+        if (arg == "--id") {
             options.node_id = static_cast<std::uint32_t>(std::stoul(require_value(arg)));
         } else if (arg == "--listen") {
             options.listen_address = require_value(arg);
-        } else if (arg == "--coordinator") {
-            options.coordinator_address = require_value(arg);
         } else if (arg == "--help" || arg == "-h") {
             print_usage_and_exit(argv[0], 0);
         } else {
@@ -82,10 +79,6 @@ AgentOptions parse_options(
         throw std::invalid_argument("Missing required option: --listen");
     }
 
-    if (options.coordinator_address.empty()) {
-        throw std::invalid_argument("Missing required option: --coordinator");
-    }
-
     return options;
 }
 }// namespace
@@ -97,9 +90,8 @@ int main(const int argc, char* argv[])
 
         const auto node_id = static_cast<ssr::NodeId>(options.node_id);
         ssr::MockDataplaneBackend dataplane_backend;
-        ssr::NodeAgent node_agent(node_id, dataplane_backend);
-        ssr::CoordinatorEventClient event_client(node_id, options.coordinator_address);
-        ssr::NodeAgentServiceImpl service(node_agent, event_client);
+        ssr::SSRAgent ssr_agent(node_id, dataplane_backend);
+        ssr::AgentRPCServiceImpl service(ssr_agent);
 
         grpc::ServerBuilder builder;
 

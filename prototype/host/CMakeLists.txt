@@ -68,15 +68,12 @@ target_link_libraries(
 ##################################################
 add_library(
     ssr_host_core
-    src/mock_dataplane.cpp
-    src/cluster.cpp
-    src/node_agent.cpp
     src/proto_conversion.cpp
-    src/node_agent_service.cpp
-    src/node_event_store.cpp
-    src/coordinator_service.cpp
-    src/coordinator_event_client.cpp
-    src/cluster_coordinator.cpp
+    src/coordinator.cpp
+    src/agent.cpp
+    src/agent_grpc_service.cpp
+    src/agent_dataplane_backend.cpp
+    src/agent_dataplane_backend_mock.cpp
 )
 
 target_include_directories(
@@ -122,53 +119,4 @@ target_link_libraries(
 target_compile_options(
     ssr-coordinator
     PUBLIC -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion
-)
-
-add_executable(
-    test_mock_lifecycle
-    tests/test_mock_lifecycle.cpp
-)
-
-target_link_libraries(test_mock_lifecycle PRIVATE ssr_host_core)
-
-target_compile_options(
-    test_mock_lifecycle
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-        -Wconversion
-        -Wsign-conversion
-)
-
-add_executable(
-    test_node_agent_grpc
-    tests/test_node_agent_grpc.cpp
-)
-
-target_link_libraries(
-    test_node_agent_grpc
-    PUBLIC  ssr_host_core ssr_control_proto
-)
-
-target_compile_options(
-    test_node_agent_grpc
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-        -Wconversion
-        -Wsign-conversion
-)
-
-enable_testing()
-
-add_test(
-    NAME mock_lifecycle
-    COMMAND test_mock_lifecycle
-)
-
-add_test(
-    NAME node_agent_grpc
-    COMMAND test_node_agent_grpc
 )

@@ -1,6 +1,8 @@
-#include "ssr/cluster_coordinator.hpp"
-#include "ssr/coordinator_service.hpp"
-#include "ssr/node_event_store.hpp"
+#include "ssr/ssr.h"
+#include "ssr/coordinator.hpp"
+#include "ssr/proto_conversion.hpp"
+#include "ssr/agent.hpp"
+
 
 #include <grpcpp/grpcpp.h>
 
@@ -16,6 +18,7 @@
 #include <memory>
 #include <random>
 #include <sstream>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,7 +27,7 @@
 
 namespace {
 
-struct CoordinatorOptions {
+struct CoordinatorConfig {
     std::string listen_address;
     std::map<std::uint32_t, std::string> node_addresses;
     std::map<std::uint32_t, std::string> node_macs;
@@ -120,11 +123,93 @@ ssr::MacAddress parse_mac(
     return result;
 }
 
+/*
+ * Example configuration file:
+    [Coordinator]
+    address = 127.0.0.1:50050
+
+    [Agent]
+    replica0 = 0.0.0.0:50051
+    mac0 = 00:00:00:00:00:01
+    replica1 = 0.0.0.0:50053
+    mac1 = 00:00:00:00:00:02
+    replica2 = 0.0.0.0:50055
+    mac2 = 00:00:00:00:00:03
+
+    [Dataplane]
+    round_length_ns = 2000
+ *
+ */
+bool parse_config_file(
+    const std::string& file_path,
+    CoordinatorConfig& config
+)
+{
+    // check if file exists
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        printf("Configuration file '%s' does not exist or cannot be opened\n", file_path.c_str());
+        return false;
+    }
+
+    // parse file line by line
+    std::string line;
+    std::string current_section;
+    while (std::getline(file, line)) {
+        // trim whitespace
+        line.erase(0, line.find_first_not_of(" \t\n\r"));
+        line.erase(line.find_last_not_of(" \t\n\r") + 1);
+        // erase all whitespace
+        line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
+
+        // skip empty lines and comments
+        if (line.empty() || line[0] == '#') {
+            continue;
+        } else if (line[0] == '[' && line.back() == ']') {
+            current_section = line.substr(1, line.size() - 2);
+        } else if (current_section == "Coordinator") {
+            // Parse Coordinator options
+            if (line.rfind("address", 0) == 0) {
+                const std::string value = line.substr(line.find('=') + 1);
+                config.listen_address = value;
+            }
+        } else if (current_section == "Agent") {
+            // Parse Agent options
+            if (line.rfind("replica", 0) == 0) {
+                const std::string value = line.substr(line.find('=') + 1);
+                const std::string id_str = line.substr(7, 1); // "replica" is 7 characters
+                const std::uint32_t node_id = parse_u32(id_str, "replica ID");
+                printf("Parsed replica ID %u with address %s\n", node_id, value.c_str());
+                config.node_addresses[node_id] = value;
+            } else if (line.rfind("mac", 0) == 0) {
+                const std::string value = line.substr(line.find('=') + 1);
+                const std::string id_str = line.substr(3, 1); // "mac" is 3 characters
+                const std::uint32_t node_id = parse_u32(id_str, "mac ID");
+                printf("Parsed mac ID %u with address %s\n", node_id, value.c_str());
+                config.node_macs[node_id] = value;
+            }
+        } else if (current_section == "Dataplane") {
+            // Parse Dataplane options
+            if (line.rfind("round_length_ns", 0) == 0) {
+                const std::string value = line.substr(line.find('=') + 1);
+                config.round_length_ns = parse_u32(value, "round_length_ns");
+            }
+        } else {
+            throw std::invalid_argument(
+                "Unknown section in configuration file: '" + current_section + "'"
+            );
+        }
+    }
+
+    return true;
+}
+
 [[noreturn]]
 void print_usage_and_exit(const char* program_name, int exit_code)
 {
-    std::cerr << "Usage: " << program_name << " [options]\n"
+    std::cerr << "Usage: " << program_name << " [config]\n"
               << "Options:\n"
+              << "  --file <path>               Path to configuration file\n"
               << "  --listen <address>          Address to listen on for gRPC requests\n"
               << "  --node <id>=<address>       Node ID and address of a node agent (can be specified multiple times)\n"
               << "  --mac <id>=<mac>            Node ID and MAC address of a node (can be specified multiple times)\n"
@@ -142,9 +227,9 @@ void print_usage_and_exit(const char* program_name, int exit_code)
     std::exit(exit_code);
 }
 
-CoordinatorOptions parse_options(int argc, char* argv[])
+CoordinatorConfig parse_options(int argc, char* argv[])
 {
-    CoordinatorOptions options;
+    CoordinatorConfig config;
 
     for (int index = 1; index < argc; ++index) {
         const std::string_view arg = argv[index];
@@ -160,22 +245,29 @@ CoordinatorOptions parse_options(int argc, char* argv[])
                 return argv[index];
             };
 
-        if (arg == "--listen") {
-            options.listen_address = require_value(arg);
+        if (arg == "--file") {
+            const std::string file_path = require_value(arg);
+            if (!parse_config_file(file_path, config)) {
+                throw std::invalid_argument(
+                    "Failed to parse configuration file: " + file_path
+                );
+            }
+        } else if (arg == "--listen") {
+            config.listen_address = require_value(arg);
         } else if (arg == "--node") {
             const auto [node_id, address] = parse_id_value(require_value(arg), arg);
-            
-            if (!options.node_addresses.emplace(node_id, std::move(address)).second) {
+
+            if (!config.node_addresses.emplace(node_id, std::move(address)).second) {
                 throw std::invalid_argument(
-                    "Duplicate node ID in --node options: " + std::to_string(node_id)
+                    "Duplicate node ID in --node config: " + std::to_string(node_id)
                 );
             }
         } else if (arg == "--mac") {
             const auto [node_id, mac_str] = parse_id_value(require_value(arg), arg);
 
-            if (!options.node_macs.emplace(node_id, std::move(mac_str)).second) {
+            if (!config.node_macs.emplace(node_id, std::move(mac_str)).second) {
                 throw std::invalid_argument(
-                    "Duplicate node ID in --mac options: " + std::to_string(node_id)
+                    "Duplicate node ID in --mac config: " + std::to_string(node_id)
                 );
             }
         } else if (arg == "--ethernet-type") {
@@ -187,11 +279,7 @@ CoordinatorOptions parse_options(int argc, char* argv[])
                     "': '" + std::to_string(value) + "' is out of range for a 16-bit unsigned integer"
                 );
             }
-
-            options.ethernet_type = static_cast<std::uint16_t>(value);
-        } else if (arg == "--round-length") {
-            const std::uint32_t value = parse_u32(require_value(arg), arg);
-            options.round_length_ns = value;
+            config.ethernet_type = static_cast<std::uint16_t>(value);
         } else if (arg == "--help" || arg == "-h") {
             print_usage_and_exit(argv[0], 0);
         } else {
@@ -201,30 +289,31 @@ CoordinatorOptions parse_options(int argc, char* argv[])
         }
     }
 
-    if (options.listen_address.empty()) {
+    if (config.listen_address.empty()) {
         throw std::invalid_argument("Missing required option: --listen");
     }
 
-    if (options.node_addresses.empty()) {
+    if (config.node_addresses.empty()) {
         throw std::invalid_argument("At least one --node option must be specified");
     }
 
-    if (options.node_addresses.size() != options.node_macs.size()) {
+    if (config.node_addresses.size() != config.node_macs.size()) {
         throw std::invalid_argument(
-            "The number of --node options must match the number of --mac options"
+            "The number of --node config must match the number of --mac config"
         );
     }
 
-    for (std::uint32_t expected = 0; expected < options.node_addresses.size(); ++expected) {
-        if (!options.node_addresses.contains(expected) ||
-            !options.node_macs.contains(expected)) {
+    for (std::uint32_t expected = 0; expected < config.node_addresses.size(); ++expected) {
+        printf("Checking for node ID %u in configuration\n", expected);
+        if (!config.node_addresses.contains(expected) ||
+            !config.node_macs.contains(expected)) {
             throw std::invalid_argument(
                 "Missing --node or --mac option for node ID: " + std::to_string(expected)
             );
         }
     }
 
-    return options;
+    return config;
 }
 
 ssr::SessionId create_session_id()
@@ -243,20 +332,15 @@ ssr::SessionId create_session_id()
 const char* coordinator_state_name(const ssr::CoordinatorState state)
 {
     switch (state) {
-        case ssr::CoordinatorState::CollectingNodes: return "CollectingNodes";
         case ssr::CoordinatorState::Idle: return "Idle";
-        case ssr::CoordinatorState::Preparing: return "Preparing";
         case ssr::CoordinatorState::Ready: return "Ready";
         case ssr::CoordinatorState::Running: return "Running";
-        case ssr::CoordinatorState::Stopping: return "Stopping";
         case ssr::CoordinatorState::Stopped: return "Stopped";
-        case ssr::CoordinatorState::Resetting: return "Resetting";
-        case ssr::CoordinatorState::Failed: return "Failed";
         default: return "Unknown";
     }
 }
 
-void print_results(const std::vector<ssr::NodeRpcResult>& results)
+void print_results(const std::vector<ssr::AgentRPCResult>& results)
 {
     for (const auto& result : results) {
         std::cout << "Node ID: " << result.node_id
@@ -267,146 +351,128 @@ void print_results(const std::vector<ssr::NodeRpcResult>& results)
             std::cout << "  gRPC Status Code: " << static_cast<int>(result.status_code) << "\n";
         }
 
-        std::cout << "  Node State: " << ssr::control::v1::NodeState_Name(result.reply.state()) << "\n";
+        std::cout << "  Node State: " << ssr::control::v1::AgentState_Name(result.reply.state()) << "\n";
         if (result.reply.has_dataplane_status()) {
             std::cout << "  Dataplane State: " << ssr::control::v1::DataplaneState_Name(result.reply.dataplane_status().state()) << "\n";
         }
     }
 }
 
-void print_operation(const ssr::ClusterOperationResult& operation_result)
+void print_operation(const ssr::ClusterOptResult& operation_result)
 {
     std::cout << "Final Coordinator State: " << coordinator_state_name(operation_result.final_state) << "\n";
     std::cout << "Node Results:\n";
-    print_results(operation_result.node_results);
-
-    if (!operation_result.rollback_results.empty()) {
-        std::cout << "Rollback Results:\n";
-        print_results(operation_result.rollback_results);
-    }
+    print_results(operation_result.results);
 }
 
 } // namespace
 
 int main(const int argc, char* argv[])
 {
+    printf("SSR Coordinator starting...\n");
     try {
-        const CoordinatorOptions options = parse_options(argc, argv);
+        const CoordinatorConfig config = parse_options(argc, argv);
 
         std::vector<ssr::AgentEndpoint> endpoints;
-        endpoints.reserve(options.node_addresses.size());
+        endpoints.reserve(config.node_addresses.size());
 
         ssr::ClusterConfig cluster_config{};
-        cluster_config.ethernet_type = options.ethernet_type;
-        cluster_config.round_length_ns = options.round_length_ns;
+        cluster_config.ethernet_type = config.ethernet_type;
+        cluster_config.round_length_ns = config.round_length_ns;
 
-        for (const auto& [node_id, address] : options.node_addresses) {
+        for (const auto& [node_id, address] : config.node_addresses) {
             endpoints.push_back(
                 ssr::AgentEndpoint{
                     .node_id = node_id,
-                    .address = address
+                    .address = address,
+                    .ip_address = address.substr(0, address.find(':')),
+                    .port = static_cast<std::uint16_t>(std::stoi(address.substr(address.find(':') + 1))),
+                    .mac_address = config.node_macs.at(node_id)
                 }
             );
 
-            cluster_config.replica_macs.push_back(parse_mac(options.node_macs.at(node_id)));
+            cluster_config.replica_macs.push_back(parse_mac(config.node_macs.at(node_id)));
         }
 
         cluster_config.validate();
 
-        ssr::NodeSyncResults sync_results;
+        ssr::RunConfig run_config{};
+        run_config.run_id = 1; // This could be generated or configured as needed
+        run_config.start_time_ns = 7000; // This will be set when starting the run
+        run_config.replica_num = static_cast<std::uint32_t>(cluster_config.replica_count());
+        run_config.round_length_ns = cluster_config.round_length_ns;
 
-        for (const auto& endpoint : endpoints) {
-            sync_results.emplace(
-                endpoint.node_id, 
-                ssr::SyncResult{
-                    .synchronized = true,
-                    .estimated_offset_ns = 0,
-                    .uncertainty_ns = 0
-                });
-        }
-
-        ssr::ClusterCoordinator coordinator(std::move(endpoints));
-
-        ssr::NodeEventStore event_store;
-        ssr::CoordinatorServiceImpl service(
-            event_store,
-            [&coordinator](
-                const ssr::control::v1::NodeEventReport& event_report
-            ) {
-                coordinator.handle_node_event(event_report);
-            }
-        );
-
-        grpc::ServerBuilder builder;
-        int selected_port = 0;
-
-        builder.AddListeningPort(options.listen_address, grpc::InsecureServerCredentials(), &selected_port);
-
-        builder.RegisterService(&service);
-
-        std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-
-        if (server == nullptr || selected_port <= 0) {
-            throw std::runtime_error("Failed to start gRPC server on address: " + options.listen_address);
-        }
-
+        ssr::SSRCoordinator coordinator(std::move(endpoints));
         std::cout << "SSR Coordinator started\n"
-                    << "  listen: " << options.listen_address << "\n"
+                    << "  listen: " << config.listen_address << "\n"
                     << "  nodes: " << endpoints.size() << "\n\n"
                     << "Commands:\n"
                     << "  status\n"
                     << "  prepare\n"
                     << "  start\n"
                     << "  stop\n"
-                    << "  reset\n"
-                    << "  events\n"
                     << "  quit\n";
         
         std::string command;
 
         while (std::cout << "ssr> " && std::getline(std::cin, command)) {
-            try {
-                if (command == "status") {
-                    std::cout << "coordinator-state=" << coordinator_state_name(coordinator.state()) << "\n";
-                    print_results(coordinator.get_status());
-                } else if (command == "prepare") {
-                    print_operation(coordinator.prepare(create_session_id(), cluster_config, sync_results));
-                } else if (command == "start") {
-                    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()
-                    ).count();
+            if (command == "quit" || command == "exit") {
+                break;
+            }
 
-                    const ssr::StartConfig start_config{
-                        .first_round_id = 0,
-                        .first_round_timestamp_ns = static_cast<uint64_t>(now_ns) + 1000000, // Start 1 ms in the future
-                        .first_run_id = 1,
-                    };
+            if (command.empty()) {
+                continue;
+            }
 
-                    print_operation(coordinator.start(start_config));
-                } else if (command == "stop") {
-                    print_operation(coordinator.stop());
-                } else if (command == "reset") {
-                    print_operation(coordinator.reset());
-                } else if (command == "events") {
-                    const auto events = event_store.history();
+            if (command == "help") {
+                std::cout << "Available commands:\n"
+                          << "  status  - Get the status of the coordinator and agents\n"
+                          << "  prepare - Prepare the agents for a run\n"
+                          << "  start   - Start the run on all agents\n"
+                          << "  stop    - Stop the run on all agents\n"
+                          << "  quit    - Exit the coordinator\n";
+                continue;
+            }
 
-                    for (const auto& event : events) {
-                        std::cout << "node=" << event.node_id()
-                                  << ", seq=" << event.sequence_number()
-                                  << ", detial=" << event.detail() << "\n";
+            if (command == "status") {
+                std::cout << "coordinator-state=" << coordinator_state_name(coordinator.state()) << "\n";
+                print_results(coordinator.agents_get_status());
+                continue;
+            }
+
+            switch (coordinator.state()) {
+                case ssr::CoordinatorState::Idle:
+                    if (command == "prepare") {
+                        print_operation(coordinator.agents_prepare(create_session_id(), run_config));
+                    } else {
+                        std::cerr << "Invalid command in Idle state. Only 'prepare', 'status', or 'quit' are allowed.\n";
                     }
-                } else if (command == "quit" || command == "exit") {
                     break;
-                } else if (!command.empty()) {
-                    std::cerr << "Unknown command: " << command << "\n";
-                }
-            } catch (const std::exception& ex) {
-                std::cerr << "Command failed: " << ex.what() << "\n";
+                case ssr::CoordinatorState::Ready:
+                    if (command == "start") {
+                        print_operation(coordinator.agents_start());
+                    } else if (command == "stop") {
+                        print_operation(coordinator.agents_stop());
+                    } else {
+                        std::cerr << "Invalid command in Ready state. Only 'start', 'stop', 'status', or 'quit' are allowed.\n";
+                    }
+                    break;
+                case ssr::CoordinatorState::Running:
+                    if (command == "stop") {
+                        print_operation(coordinator.agents_stop());
+                    } else {
+                        std::cerr << "Invalid command in Running state. Only 'stop', 'status', or 'quit' are allowed.\n";
+                    }
+                    break;
+                case ssr::CoordinatorState::Stopped:
+                
+
+                    break;
+                default:
+                    std::cerr << "Unknown coordinator state.\n";
+                    continue;
             }
         }
-
-        server->Shutdown();
-        server->Wait();
 
         return 0;
     } catch (const std::exception& ex) {

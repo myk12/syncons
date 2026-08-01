@@ -1,4 +1,4 @@
-#include "ssr/mock_dataplane.hpp"
+#include "ssr/agent_dataplane_backend_mock.hpp"
 
 #include <utility>
 #include <string>
@@ -22,51 +22,52 @@ const char* failure_point_name(
 
 void MockDataplaneBackend::require_open() const
 {
-    if (state_ == DataplaneState::Closed) {
+    if (dataplane_status_.state == DataplaneState::Closed) {
         throw DataplaneError("Dataplane is closed");
     }
 }
 
 void MockDataplaneBackend::open()
 {
-    if (state_ != DataplaneState::Closed) {
+    printf("MockDataplaneBackend::open called\n");
+    if (dataplane_status_.state != DataplaneState::Closed) {
         throw DataplaneError("Dataplane is already open");
     }
 
     maybe_fail(MockFailurePoint::Open);
 
-    state_ = DataplaneState::Ready;
+    dataplane_status_.state = DataplaneState::Open;
+    printf("MockDataplaneBackend::open succeeded, state is now Open\n");
 }
 
 void MockDataplaneBackend::close() noexcept
 {
+    printf("MockDataplaneBackend::close called\n");
     config_.reset();
-    sync_result_.reset();
-    start_config_.reset();
     failure_point_.reset();
 
-    state_ = DataplaneState::Closed;
+    dataplane_status_.state = DataplaneState::Closed;
 }
 
 void MockDataplaneBackend::reset()
 {
+    printf("MockDataplaneBackend::reset called\n");
     require_open();
 
     maybe_fail(MockFailurePoint::Reset);
 
     config_.reset();
-    sync_result_.reset();
-    start_config_.reset();
 
-    state_ = DataplaneState::Reset;
+    dataplane_status_.state = DataplaneState::Closed; // Reset transitions to Closed for simplicity in mock
 }
 
-void MockDataplaneBackend::configure(const SsrConfig& config)
+void MockDataplaneBackend::configure(const RunConfig& config)
 {
+    printf("MockDataplaneBackend::configure called\n");
     require_open();
 
-    if (state_ != DataplaneState::Reset) {
-        throw DataplaneError("Dataplane must be in Reset state to configure");
+    if (dataplane_status_.state != DataplaneState::Open) {
+        throw DataplaneError("Dataplane must be in Open state to configure");
     }
 
     config.validate();
@@ -74,82 +75,56 @@ void MockDataplaneBackend::configure(const SsrConfig& config)
     maybe_fail(MockFailurePoint::Configure);
 
     config_ = config;
-    sync_result_.reset();
-    start_config_.reset();
 
-    state_ = DataplaneState::Configured;
+    dataplane_status_.state = DataplaneState::Configured;
+    printf("MockDataplaneBackend::configure succeeded, state is now Configured\n");
 }
 
-void MockDataplaneBackend::synchronize(const SyncResult& result)
+void MockDataplaneBackend::start()
 {
+    printf("MockDataplaneBackend::start called\n");
     require_open();
 
-    if (state_ != DataplaneState::Configured) {
-        throw DataplaneError("Dataplane must be in Configured state to synchronize");
-    }
-
-    if (!result.synchronized) {
-        throw DataplaneError("SyncResult must indicate synchronized");
-    }
-
-    maybe_fail(MockFailurePoint::Synchronize);
-
-    sync_result_ = result;
-    state_ = DataplaneState::Synchronized;
-}
-
-void MockDataplaneBackend::start(const StartConfig& config)
-{
-    require_open();
-
-    if (state_ != DataplaneState::Synchronized &&
-        state_ != DataplaneState::Stopped) {
-        throw DataplaneError("Dataplane must be in Synchronized or Stopped state to start");
+    if (dataplane_status_.state != DataplaneState::Configured) {
+        throw DataplaneError("Dataplane must be in Configured state to start");
     }
 
     if (!config_.has_value()) {
         throw DataplaneError("Dataplane must be configured before starting");
     }
 
-    if (!sync_result_.has_value() ||
-        !sync_result_->synchronized) {
-        throw DataplaneError("Dataplane must be synchronized before starting");
-    }
-
-    config.validate();
-
     maybe_fail(MockFailurePoint::Start);
 
-    start_config_ = config;
-    state_ = DataplaneState::Running;
+    dataplane_status_.state = DataplaneState::Running;
+    printf("MockDataplaneBackend::start succeeded, state is now Running\n");
 }
 
 void MockDataplaneBackend::stop()
 {
+    printf("MockDataplaneBackend::stop called\n");
     require_open();
 
-    if (state_ != DataplaneState::Running) {
+    if (dataplane_status_.state != DataplaneState::Running) {
         throw DataplaneError("Dataplane must be in Running state to stop");
     }
 
     maybe_fail(MockFailurePoint::Stop);
 
     // Stop preserves static configuration and synchronization.
-    state_ = DataplaneState::Stopped;
+    dataplane_status_.state = DataplaneState::Closed; // Transition to Closed for simplicity in mock
+    printf("MockDataplaneBackend::stop succeeded, state is now Closed\n");
 }
-
 
 DataplaneStatus MockDataplaneBackend::status() const
 {
     DataplaneStatus result;
 
-    result.state = state_;
+    result.state = dataplane_status_.state;
     result.config_valid = config_.has_value();
-    result.sync_valid = sync_result_.has_value() && sync_result_->synchronized;
-    result.running = (state_ == DataplaneState::Running);
-    result.idle = (state_ != DataplaneState::Closed &&
-                    state_ != DataplaneState::Running &&
-                    state_ != DataplaneState::Failed);
+    result.running = (dataplane_status_.state == DataplaneState::Running);
+    result.idle = (dataplane_status_.state != DataplaneState::Closed &&
+                    dataplane_status_.state != DataplaneState::Running &&
+                    dataplane_status_.state != DataplaneState::Halted);
     
     result.error_code = 0; // No error codes in mock implementation
     return result;

@@ -23,50 +23,46 @@ message ClusterConfig {
 // Result of the clock/time synchronization procedure.
 message SyncResult {
     bool synchronized = 1;
-
     sint64 estimated_offset_ns = 2;
     uint64 uncertainty_ns = 3;
+    uint32 round_length_ns = 4;
 }
 
-// Dataplane starts at a shared future timestamp
-message StartConfig {
-    uint32 first_round_id = 1;
-    uint64 first_round_timestamp_ns = 2;
-    uint32 first_run_id = 3;
+message RunConfig {
+    uint64 run_id = 1;
+    uint64 start_time_ns = 2;
+    uint32 replica_num = 3;
+    uint32 round_length_ns = 4;
 }
 
-enum NodeState {
-    NODE_STATE_UNSPECIFIED = 0;
-    NODE_STATE_IDLE = 1;
-    NODE_STATE_READY = 2;
-    NODE_STATE_RUNNING = 3;
-    NODE_STATE_STOPPED = 4;
-    NODE_STATE_FAILED = 5;
+enum AgentState {
+    AGENT_STATE_UNSPECIFIED = 0;
+    AGENT_STATE_IDLE = 1;
+    AGENT_STATE_CONFIGURED = 2;
+    AGENT_STATE_RUNNING = 3;
+    AGENT_STATE_STOPPED = 4;
 }
 
 enum DataplaneState {
     DATAPLANE_STATE_UNSPECIFIED = 0;
     DATAPLANE_STATE_CLOSED = 1;
-    DATAPLANE_STATE_READY = 2;
-    DATAPLANE_STATE_RESET = 3;
-    DATAPLANE_STATE_CONFIGURED = 4;
-    DATAPLANE_STATE_SYNCHRONIZED = 5;
-    DATAPLANE_STATE_RUNNING = 6;
-    DATAPLANE_STATE_STOPPED = 7;
+    DATAPLANE_STATE_OPEN = 2;
+    DATAPLANE_STATE_CONFIGURED = 3;
+    DATAPLANE_STATE_RUNNING = 4;
+    DATAPLANE_STATE_HALTED = 5;
 }
 
 message DataplaneStatus {
     DataplaneState state = 1;
 
     bool config_valid = 2;
-    bool sync_valid = 3;
     bool running = 4;
 }
 
 // A snapshot of one NodeAgent and its local dataplane.
 message NodeStatus {
     uint32 node_id = 1;
-    NodeState state = 2;
+    AgentState state = 2;
 
     SessionId session_id = 3;
 
@@ -78,79 +74,35 @@ message PrepareRequest {
     uint32 target_node_id = 1;
 
     SessionId session_id = 2;
-    ClusterConfig cluster_config = 3;
-    SyncResult sync_result = 4;
+    RunConfig run_config = 3;
 }
 
 message StartRequest {
     uint32 target_node_id = 1;
-
     SessionId session_id = 2;
-    StartConfig start_config = 3;
 }
 
 message StopRequest {
     uint32 target_node_id = 1;
-
     SessionId session_id = 2;
-}
-
-
-// Reset is deliberately unconditional
-message ResetRequest {
-    uint32 target_node_id = 1;
 }
 
 message GetStatusRequest {
     uint32 target_node_id = 1;
 }
 
-message NodeReply {
+message AgentReply {
     // Node id
     uint32 node_id = 1;
-    NodeState state = 2;
+    AgentState state = 2;
     DataplaneStatus dataplane_status = 3;
     SessionId session_id = 4;
 }
 
-// NodeAgent -> current leader reports.
-enum NodeEventKind {
-    NODE_EVENT_UNSPECIFIED = 0;
-
-    NODE_EVENT_STATE_CHANGED = 1;
-    NODE_EVENT_DATAPLANE_HALTED = 2;
-    NODE_EVENT_DATAPLANE_ERROR = 3;
-}
-
-// sequence number is monotonically increasing for each node
-message NodeEventReport {
-    uint32 node_id = 1;
-    uint64 sequence_number = 2;
-
-    SessionId session_id = 3;
-
-    NodeEventKind event = 4;
-    NodeState node_state = 5;
-    DataplaneState dataplane_state = 6;
-
-    string detail = 7;
-}
-
-message ReportNodeEventReply {
-    uint64 ack_sequence_number = 1;
-}
-
 // Runs on every replica host.
-service NodeAgentService {
-    rpc Prepare(PrepareRequest) returns (NodeReply);
-    rpc Start(StartRequest) returns (NodeReply);
-    rpc Stop(StopRequest) returns (NodeReply);
-    rpc Reset(ResetRequest) returns (NodeReply);
-    rpc GetStatus(GetStatusRequest) returns (NodeReply);
-    rpc ReportNodeEvent(NodeEventReport) returns (ReportNodeEventReply);
-}
-
-// Runs on the current leader
-service CoordinatorService {
-    rpc ReportNodeEvent(NodeEventReport) returns (ReportNodeEventReply);
+service AgentService {
+    rpc Prepare(PrepareRequest) returns (AgentReply);
+    rpc Start(StartRequest) returns (AgentReply);
+    rpc Stop(StopRequest) returns (AgentReply);
+    rpc GetStatus(GetStatusRequest) returns (AgentReply);
 }

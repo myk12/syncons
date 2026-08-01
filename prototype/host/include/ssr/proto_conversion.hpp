@@ -1,8 +1,8 @@
 #pragma once
 
-#include "ssr/cluster.hpp"
-#include "ssr/dataplane_backend.hpp"
-#include "ssr/node_agent.hpp"
+#include "ssr/ssr.h"
+#include "ssr/agent.hpp"
+#include "ssr/coordinator.hpp"
 
 #include "ssr_control.pb.h"
 
@@ -49,18 +49,19 @@ void sync_result_to_proto(
 );
 
 [[nodiscard]]
-StartConfig start_config_from_proto(
-    const control::v1::StartConfig& input
+RunConfig run_config_from_proto(
+    const control::v1::RunConfig& input
 );
 
-void start_config_to_proto(
-    const StartConfig& input,
-    control::v1::StartConfig* output
+void run_config_to_proto(
+    const RunConfig& input,
+    control::v1::RunConfig* output
 );
+
 
 [[nodiscard]]
-control::v1::NodeState node_state_to_proto(
-    NodeAgentState state
+control::v1::AgentState agent_state_to_proto(
+    AgentState state
 ) noexcept;
 
 [[nodiscard]]
