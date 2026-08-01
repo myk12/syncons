@@ -26,13 +26,13 @@ from cocotbext.pcie.xilinx.us import UltraScalePlusPcieDevice
 
 try:
     import mqnic
-    import ssr_dataplane as ssr
+    import ssr_dataplane
 except ImportError:
     # attempt import from current directory
     sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
     try:
         import mqnic
-        import ssr_dataplane as ssr
+        import ssr_dataplane
     finally:
         del sys.path[0]
 
@@ -272,6 +272,8 @@ class TB(object):
 
         self.driver = mqnic.Driver()
 
+        self.ssr_driver = ssr_dataplane.Driver()
+
         self.dev.functions[0].configure_bar(0, 2**len(dut.core_pcie_inst.axil_ctrl_araddr), ext=True, prefetch=True)
         if hasattr(dut.core_pcie_inst, 'pcie_app_ctrl'):
             self.dev.functions[0].configure_bar(2, 2**len(dut.core_pcie_inst.axil_app_ctrl_araddr), ext=True, prefetch=True)
@@ -427,22 +429,6 @@ class TB(object):
                 for mac in self.port_mac:
                     if not mac.tx.empty():
                         await mac.rx.send(await mac.tx.recv())
-
-## Helper functions
-async def wait_sink_slots(tb, ssr_rb, expected_count, timeout_cycles=5000):
-    for _ in range(timeout_cycles):
-        slot_count = await ssr_rb.read_dword(ssr.COMMON_REG_PROPOSAL_SINK_SLOT_COUNT)
-        error_count = await ssr_rb.read_dword(ssr.COMMON_REG_PROPOSAL_SINK_ERROR_COUNT)
-
-        if error_count != 0:
-            raise Exception("SSR sink error count is non-zero")
-        
-        if slot_count >= expected_count:
-            return slot_count
-        
-        await RisingEdge(tb.dut.clk)
-
-    raise TimeoutError("Timeout waiting for SSR sink slots")
 
 @cocotb.test()
 async def run_test_nic(dut):
@@ -747,149 +733,72 @@ async def run_test_ssr_dataplane(dut):
     for interface in tb.driver.interfaces:
         await interface.ndevs[0].open()
 
+    tb.log.info("Init SSR Dataplane driver")
+    await tb.ssr_driver.probe(tb.driver)
+
     tb.log.info("Init complete")
 
-    tb.log.info("TEST SSR Application")
+    tb.log.info("TEST SSR Dataplane Application")
 
-    app_reg_blocks = mqnic.RegBlockList()
-    await app_reg_blocks.enumerate_reg_blocks(tb.driver.app_hw_regs)
+    tb.log.info("Testing Proposal Datapath...")
+    ssr = tb.ssr_driver
 
-    tb.log.info("Found %d application register blocks", len(app_reg_blocks))
-    ssr_rb = app_reg_blocks.find(ssr.SSR_RB_TYPE, ssr.SSR_RB_VERSION)
-    assert ssr_rb is not None, "SSR register block not found"
+    proposal_count = 4
+    slot_bytes = await ssr.proposal.read_slot_length()
+    proposal_stride = slot_bytes
+    proposal_region_size = proposal_count * proposal_stride
 
-    # ======================================================================
-    #           Basic register read/write tests
-    # ======================================================================
-    # check SSR register block
-    tb.log.info("Check SSR register block")
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_TYPE) == ssr.SSR_RB_TYPE, "Invalid SSR register block type"
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_VERSION) == ssr.SSR_RB_VERSION, "Invalid SSR register block version"
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_FEATURES) == ssr.SSR_RB_FEATURES, "Invalid SSR register block features"
+    tb.log.info("Proposal configuration: count=%d, slot_bytes=%d, stride=%d, region_size=%d", proposal_count, slot_bytes, proposal_stride, proposal_region_size)
 
-    # test scratch register
-    tb.log.info("Test SSR scratch register")
-    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_SCRATCH, 0x12345678)
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_SCRATCH) == 0x12345678, "SSR scratch register read/write failed"
+    # Allocate simulated host DMA memory through the SSR Dataplane driver
+    proposal_mem = ssr.alloc_dma_region(proposal_region_size, fill=0x00)
+    proposal_dma_addr = ssr.dma_address(proposal_mem)
+    assert proposal_dma_addr == proposal_mem.get_absolute_address(0), "DMA address mismatch"
 
-    # test replica configuration register
-    tb.log.info("Test SSR replica configuration register")
-    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_ID, 0x00000001)     # replica_id
-    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_NUM, 0x00000003)     # replica_num
-    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ROUND_LEN_NS, 0x00000800)     # round_length_ns
-    await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ETH_TYPE, 0x00000177)     # ethernet_type
+    # Fill every proposal slot with a deterministic pattern for testing
+    for slot_index in range(proposal_count):
+        slot_offset = slot_index * proposal_stride
+        slot_data = bytes([(slot_index * 17 + byte_index) & 0xFF for byte_index in range(slot_bytes)])
+        proposal_mem[slot_offset:slot_offset + slot_bytes] = slot_data
 
-    status = await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_STATUS)
-    assert status & 0x1 == 1, "SSR application should be inactive"
+    # Reset and enable the test-only proposal sink
+    await ssr.test.set_proposal_sink_enabled(True)
+    await ssr.test.clear_proposal_sink()
 
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_ID) == 1, "SSR replica_id register read/write failed"
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_NUM) == 3, "SSR replica_num register read/write failed"
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ROUND_LEN_NS) == 0x800, "SSR round_length_ns register read/write failed"
-    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ETH_TYPE) == 0x177, "SSR ethernet_type register read/write failed"
+    sink_slots, sink_beats, sink_errors = await ssr.test.proposal_sink_counts()
 
-    # test MAC address registers
-    tb.log.info("Test SSR MAC address registers")
-    mac_addrs = [
-        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
-        [0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb],
-        [0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11],
-    ]
-    for i, mac in enumerate(mac_addrs):
-        mac_int = (mac[0] << 40) | (mac[1] << 32) | (mac[2] << 24) | (mac[3] << 16) | (mac[4] << 8) | mac[5]
-        await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_LO + i*8, mac_int & 0xffffffff)
-        await ssr_rb.write_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_HI + i*8, (mac_int >> 32) & 0xffff)
+    tb.log.info("Initial proposal sink countesr: slots=%d, beats=%d, errors=%d", sink_slots, sink_beats, sink_errors)
 
-    for i, mac in enumerate(mac_addrs):
-        mac_int = (mac[0] << 40) | (mac[1] << 32) | (mac[2] << 24) | (mac[3] << 16) | (mac[4] << 8) | mac[5]
-        mac_int_rd = (await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_LO + i*8)) | ((await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_MACTABLE_ADDR_HI + i*8)) << 32)
-        assert mac_int_rd == mac_int, "SSR MAC address register read/write failed"
+    assert sink_slots == 0, "Expected 0 slots in proposal sink"
+    assert sink_beats == 0, "Expected 0 beats in proposal sink"
+    assert sink_errors == 0, "Expected 0 errors in proposal sink"
 
-    # =======================================================================
-    #           SSR DMA Proposal Datapath tests
-    # =======================================================================
-    # allocate DMA buffer and fill with test data
-    tb.log.info("Test SSR DMA Proposal Datapath")
+    # submit one proposal DMA batch
+    tb.log.info("Start proposal DMA batch")
+    await ssr.proposal.submit(dma_addr=proposal_dma_addr, count=proposal_count, stride=proposal_stride)
 
-    proposal_count = 7
-    slot_bytes = 1024
-    stride = slot_bytes
+    proposal_status = await ssr.proposal.wait_done(timeout_polls = 10000)
 
-    # allocate memory for DMA buffer
-    mem = tb.rc.mem_pool.alloc_region(proposal_count*stride)
-    mem_base = mem.get_absolute_address(0)
+    tb.log.info("Proposal DMA batch completed with status: %s", proposal_status)
 
-    # fill DMA buffer with test data
-    for i in range(proposal_count):
-        payload = bytearray([(x+i) % 256 for x in range(slot_bytes)])
-        mem[i*stride:(i+1)*stride] = payload
+    assert proposal_status & ssr_dataplane.ProposalStatus.DONE, "Proposal DMA batch did not complete successfully"
+    assert not (proposal_status & ssr_dataplane.ProposalStatus.ERROR), "Proposal DMA batch completed with error"
 
-    await ssr_rb.write_dword(ssr.PROP_DMA_REG_ADDR_LO, mem_base & 0xffffffff)                # address low
-    await ssr_rb.write_dword(ssr.PROP_DMA_REG_ADDR_HI, (mem_base >> 32) & 0xffffffff)          # address high
-    await ssr_rb.write_dword(ssr.PROP_DMA_REG_LEN, slot_bytes)                                      # length
-    await ssr_rb.write_dword(ssr.PROP_DMA_REG_STRIDE_LO, stride & 0xffffffff)                                   # stride low
-    await ssr_rb.write_dword(ssr.PROP_DMA_REG_STRIDE_HI, (stride >> 32) & 0xffffffff)          # stride high
-    await ssr_rb.write_dword(ssr.PROP_DMA_REG_COUNT, proposal_count)                              # control (set start bit)
+    await ssr.test.wait_proposal_sink_slots(proposal_count, timeout_polls = 10000)
 
-    await ssr_rb.write_dword(ssr.PROP_DMA_REG_CONTROL, 0x00000001)                                  # control (set start bit)
+    sink_slots, sink_beats, sink_errors = await ssr.test.proposal_sink_counts()
 
-    # enable proposal sink
-    await ssr_rb.write_dword(ssr.COMMON_REG_PROPOSAL_SINK_CONTROL, 0x00000001)                                  # control (set start bit)
+    tb.log.info("Final proposal sink countesr: slots=%d, beats=%d, errors=%d", sink_slots, sink_beats, sink_errors)
+    assert sink_slots == proposal_count, "Expected %d slots in proposal sink, got %d" % (proposal_count, sink_slots)
+    assert sink_beats > 0, "Expected >0 beats in proposal sink, got %d" % sink_beats
+    assert sink_errors == 0, "Expected 0 errors in proposal sink, got %d" % sink_errors
 
-    await wait_sink_slots(tb, ssr_rb, proposal_count)
+    active_index = await ssr.proposal.read_active_index()
+    entry_counter = await ssr.proposal.read_entry_counter()
 
-    sink_error = await ssr_rb.read_dword(ssr.COMMON_REG_PROPOSAL_SINK_ERROR_COUNT)
-    assert sink_error == 0, "SSR sink error count is non-zero"
+    tb.log.info("Proposal DMA result: active_index=%d, entry_counter=%d", active_index, entry_counter)
 
-    status = await ssr_rb.read_dword(ssr.PROP_DMA_REG_STATUS)
-    tb.log.info("SSR DMA Proposal status: 0x%08x", status)
+    assert active_index == proposal_count
+    assert entry_counter >= proposal_count
 
-    # ======================================================================
-    #           SSR DMA commit queue tests
-    # =====================================================================
-    tb.log.info("Test SSR DMA Commit Datapath")
-
-    # check commit queue registers
-    magic = await ssr_rb.read_dword(ssr.COMMIT_DMA_REG_MAGIC)
-    version = await ssr_rb.read_dword(ssr.COMMIT_DMA_REG_VERSION)
-    features = await ssr_rb.read_dword(ssr.COMMIT_DMA_REG_FEATURES)
-    assert magic == ssr.COMMIT_DMA_MAGIC, "Invalid SSR commit DMA magic"
-    assert version == ssr.COMMIT_DMA_VERSION, "Invalid SSR commit DMA version"
-    assert features == ssr.COMMIT_DMA_FEATURES, "Invalid SSR commit DMA features"
-
-    # Configure common stride and start
-    stride = 1024
-    capacity = 32
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_STRIDE_LO, stride & 0xffffffff)                                   # stride low
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_STRIDE_HI, (stride >> 32) & 0xffffffff)          # stride high
-
-    # allocate memory for commit DMA buffers
-    mem_buf0 = tb.rc.mem_pool.alloc_region(capacity*stride)
-    mem_buf1 = tb.rc.mem_pool.alloc_region(capacity*stride)
-    mem0_base = mem_buf0.get_absolute_address(0)
-    mem1_base = mem_buf1.get_absolute_address(0)
-
-    # configure host buffer 0
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_ADDR_LO, mem0_base & 0xffffffff)                # address low
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_ADDR_HI, (mem0_base >> 32) & 0xffffffff)          # address high
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_SLOT_CAPACITY, slot_bytes)                                      # length
-
-    # configure host buffer 1
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_ADDR_LO, mem1_base & 0xffffffff)                # address low
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_ADDR_HI, (mem1_base >> 32) & 0xffffffff)          # address high
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_SLOT_CAPACITY, slot_bytes)
-
-    # Arm both buffers
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF0_CONTROL, 0x00000001)                                  # control (set start bit)
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_BUF1_CONTROL, 0x00000001)
-
-    # Start DMA writer 
-    await ssr_rb.write_dword(ssr.COMMIT_DMA_REG_CONTROL, 0x00000001)                                  # control (set start bit)
-
-    # Configure and start commit generator
-    await ssr_rb.write_dword(ssr.COMMON_REG_COMMIT_GEN_COUNT, 4)
-    await ssr_rb.write_dword(ssr.COMMON_REG_COMMIT_GEN_CONTROL, 0x00000001)                                  # control (set start bit)
-
-    # wait for 10000 cycles to allow commit generator to run
-    for _ in range(10000):
-        await RisingEdge(tb.dut.clk)
-
+    tb.log.info("Proposal DMA test completed successfully")

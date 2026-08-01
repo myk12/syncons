@@ -1,7 +1,3 @@
-下面是一份英文接口文档草稿，中心是 `proposal_buffer`，`proposal_dma_reader` 和 `tx_engine` 的描述都围绕它们如何与 buffer 交互展开。内容基于你当前的 `proposal_buffer` 设计和默认参数配置。
-
----
-
 # Proposal Buffer Interface and Design Document
 
 ## 1. Overview
