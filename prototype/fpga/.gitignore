@@ -1,0 +1,20 @@
+# cocotb / simulator generated files
+**/sim_build/
+**/results.xml
+
+# Icarus / waveform generated files
+**/iverilog_dump.v
+**/cocotb_iverilog_dump.v
+**/*.fst
+**/*.vcd
+**/*.vvp
+**/*.lxt
+**/*.lxt2
+**/*.ghw
+
+# Python cache from cocotb tests
+**/__pycache__/
+**/*.pyc
+
+# pytest/cocotb cache, if generated
+**/.pytest_cache/

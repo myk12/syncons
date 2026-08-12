@@ -1,8 +1,8 @@
 # ==============================================================================
 # 1. Build & Simulation Artifacts (Current Workflow)
 # ==============================================================================
-fpga/build/
-fpga/*.vcd
+prototype/fpga/build/
+prototype/fpga/*.vcd
 
 # Icarus Verilog generated files
 *.out
@@ -81,3 +81,17 @@ __pycache__/
 *.so
 *.dylib
 *.dll
+
+# ==============================================================================
+# 5. CMAKE Build System
+# ==============================================================================
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+prototype/host/build/
+
+.slang
+.venv
+.vscode
+.tox
