@@ -82,11 +82,11 @@ def network_future_round_skew(packet: Packet, dst: int) -> Delivery:
     return Delivery(deliver_round=packet.round_id, reason=f"same-round delivery to node {dst}")
 
 
-def network_sound_bitmap_corruption(packet: Packet, dst: int) -> Delivery:
+def network_row_corruption(packet: Packet, dst: int) -> Delivery:
     if packet.round_id == 1 and packet.src_id == 1 and dst == 2:
         return Delivery(
             deliver_round=1,
-            sound_override=0b011,
+            row_override=0b011,
             reason="boundary fault: node 2 receives a corrupted sound bitmap from node 1 in round 1",
         )
     return Delivery(deliver_round=packet.round_id, reason=f"same-round delivery to node {dst}")

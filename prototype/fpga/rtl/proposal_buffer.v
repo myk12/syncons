@@ -43,11 +43,7 @@ module proposal_buffer #
     // Tail slot interface to proposal_dma_reader
     output wire                                             tail_slot_valid,
     output wire [RAM_ADDR_WIDTH-1:0]                        tail_slot_addr,
-    output wire [DMA_LEN_WIDTH-1:0]                         tail_slot_len,
-
-    // commit current tail slot
-    input  wire                                             tail_commit_valid,
-    output wire                                             tail_commit_ready,
+    input  wire                                             tail_slot_commit,
 
     // DMA RAM write interface
     input  wire [RAM_SEG_COUNT*RAM_SEL_WIDTH-1:0]           dma_ram_wr_cmd_sel,
@@ -187,13 +183,11 @@ assign tx_head_slot_ram_addr    = head_ptr_reg * PROPOSAL_SLOT_BEAT_COUNT;
 assign tx_current_rd_addr       = tx_head_slot_ram_addr + tx_beat_index_reg;
 assign tx_next_rd_addr          = tx_head_slot_ram_addr + tx_beat_index_reg + 1'b1;
 
-assign tail_commit_fire = tail_commit_valid && tail_commit_ready;
+assign tail_commit_fire = tail_slot_commit && !buffer_full;
 assign head_pop_fire = buf_rd_valid && buf_rd_ready && buf_tx_last;
 
 assign tail_slot_valid = !buffer_full;
 assign tail_slot_addr = ({{(RAM_ADDR_WIDTH - SLOT_PTR_WIDTH){1'b0}}, tail_ptr_reg} << PROPOSAL_SLOT_BYTE_ADDR_WIDTH);
-assign tail_slot_len = PROPOSAL_SLOT_BYTES_LEN;
-assign tail_commit_ready = !buffer_full;
 
 assign buf_rd_data  = buf_rd_data_reg;
 assign buf_rd_be    = buf_rd_be_reg;

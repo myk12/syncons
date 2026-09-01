@@ -40,18 +40,31 @@ class Node:
         self.run_id = 0
         self.pending_config = None
         self.current_stage = RoundStage(round_id=-1, membership_epoch=0, installed_membership=0)
-        self.evidence_stage = RoundStage(round_id=-1, membership_epoch=0, installed_membership=0)
+        self.previous_stage = RoundStage(round_id=-1, membership_epoch=0, installed_membership=0)
         self.commit_stage = RoundStage(round_id=-2, membership_epoch=0, installed_membership=0)
         self._control_plane_event_outbox: list[JsonDict] = []
         self._pending_control_plane_update: ControlPlaneUpdate | None = None
         self._control_plane_irq_pending = False
 
-    def _quorum_for_membership(self, installed_membership: int) -> int:
-        return max(1, installed_membership.bit_count() // 2 + 1)
+    # The quorum universe is the PHYSICAL cluster size, fixed for the lifetime of
+    # the node - never the installed membership, and never the sound set.
+    #
+    # A testbed simplification with a real cost, taken deliberately. Because
+    # every config draws its quorum from the same universe, any two quorums must
+    # intersect, so two groups running different configs can never both commit.
+    # That removes the whole class of reconfiguration split.
+    #
+    # What it costs: fault tolerance cannot be regained. Reconfiguring 5 nodes
+    # down to 3 still demands 3 witnesses, so those 3 must be unanimous and one
+    # further failure halts them for good. A production design would size the
+    # quorum from the installed membership and pay for it with a joint-consensus
+    # or overlap rule across the cutover.
+    def _quorum(self) -> int:
+        return max(1, self.node_count // 2 + 1)
 
     def _observation_rows(self, stage: RoundStage) -> dict[int, int]:
         members = bitmap_members(stage.installed_membership, self.node_count)
-        return {member: stage.sound_matrix.get(member, 0) for member in members}
+        return {member: stage.rows.get(member, 0) for member in members}
 
     def _row_is_valid(self, src: int, row: int) -> bool:
         if row == 0:
@@ -62,7 +75,7 @@ class Node:
     # identical non-zero rows.
     def _agreed_row(self, stage: RoundStage) -> int | None:
         members = bitmap_members(stage.installed_membership, self.node_count)
-        quorum = self._quorum_for_membership(stage.installed_membership)
+        quorum = self._quorum()
         rows = self._observation_rows(stage)
 
         for src, row in rows.items():
@@ -116,17 +129,17 @@ class Node:
         self.current_stage = RoundStage(
             round_id=-1,
             membership_epoch=self.installed_membership_epoch,
-            installed_membership=self.current_sound_set,
+            installed_membership=self.installed_membership,
         )
-        self.evidence_stage = RoundStage(
+        self.previous_stage = RoundStage(
             round_id=-1,
             membership_epoch=self.installed_membership_epoch,
-            installed_membership=self.current_sound_set,
+            installed_membership=self.installed_membership,
         )
         self.commit_stage = RoundStage(
             round_id=-2,
             membership_epoch=self.installed_membership_epoch,
-            installed_membership=self.current_sound_set,
+            installed_membership=self.installed_membership,
         )
 
     def _activate_pending_config_if_due(self, round_id: int) -> bool:
@@ -136,6 +149,11 @@ class Node:
             return False
         if round_id < self.pending_config.effective_round:
             return False
+
+        # No cross-config overlap rule is needed here: with a fixed quorum
+        # universe, the group that moves and the group that stays draw their
+        # quorums from the same set, so at most one of them can ever reach
+        # quorum. A config too small to hold a quorum halts its own members.
 
         # Activate the pending config by moving its parameters to the installed config, 
         # updating membership state, and resetting the pipeline. 
@@ -243,16 +261,28 @@ class Node:
         return RoundStage(
             round_id=round_id,
             membership_epoch=self.installed_membership_epoch,
-            installed_membership=self.current_sound_set,
-            sound_bitmap=1 << self.node_id,
+            installed_membership=self.installed_membership,
+            row=1 << self.node_id,
             proposals={self.node_id: payload},
-            sound_matrix={},
+            rows={},
         )
 
+    # Broadcast to the whole installed membership, NOT to the current sound set.
+    #
+    # The sound set decides whose evidence counts when a stage is judged; it is
+    # not a routing decision. Narrowing the destination list lets one node's
+    # private belief physically reshape the network: a node that wrongly shrinks
+    # stops talking to a healthy peer, the remaining healthy nodes then observe
+    # different things, and a local fault becomes a cluster-wide split. Keeping
+    # the fan-out fixed confines the damage to whoever is actually wrong.
+    #
+    # It is also what the hardware does. The FPGA transmit engine broadcasts
+    # into its TDMA sub-slot; there is no per-peer filter for it to honour, so a
+    # narrowed destination list was only ever a simulator artefact.
     def _default_destinations(self) -> tuple[int, ...]:
         return tuple(
             member
-            for member in bitmap_members(self.current_sound_set, self.node_count)
+            for member in bitmap_members(self.installed_membership, self.node_count)
             if member != self.node_id
         )
 
@@ -328,7 +358,7 @@ class Node:
             installed_membership_epoch=stage.membership_epoch,
             run_id=self.run_id,
             installed_membership=stage.installed_membership,
-            quorum=self._quorum_for_membership(stage.installed_membership),
+            quorum=self._quorum(),
             observation_rows=dict(sorted(rows.items())),
             self_row=local_row,
             committed_frontier=self._committed_frontier(),
@@ -365,10 +395,18 @@ class Node:
 
     #
     # Main entry point for advancing the protocol by one round.
-    # Time layering:
-        # - commit_stage carries the previous round's exchanged sound-set rows;
-        # - this round's boundary derives the agreed row, commit set, and sound set;
-        # - the resulting sound set is then emitted as this round's sound bitmap.
+    #
+    # Time layering. A stage lives through exactly two communication rounds,
+    # and is judged at the boundary that ends the second one:
+    #
+    #   round N     as current_stage   collects proposals: who sent to me in N
+    #   round N+1   as previous_stage  collects rows: each peer's observation of
+    #                                  round N, piggybacked on its round N+1 packet
+    #   boundary N+2                   judged, commits or halts
+    #
+    # Two rounds is the floor, not a tuning choice: a node cannot know who it
+    # heard in round N until N is over, and its peers cannot learn that until
+    # N+1. The judgement itself is cheap enough to sit in the guard band.
     #
     def advance_round(self, new_round: int) -> NodeRoundResult:
         self.current_round = new_round
@@ -396,20 +434,28 @@ class Node:
 
         # 3. !!! Critical Section !!!: Evaluate the round boundary using the
         # previous round's frozen sound-matrix evidence.
-        self.commit_stage = self.evidence_stage
-        self.evidence_stage = self.current_stage
-        decision, sound_set, new_commits = self._evaluate_round_boundary()
+        # The stage being judged is whatever PREVIOUS held coming into this
+        # boundary. Keep it in a local rather than a third attribute: there are
+        # only two buffers, and a third name invites an implementation to build
+        # a third stage and evaluate everything one round late.
+        judged_stage = self.previous_stage
+        self.previous_stage = self.current_stage
+        decision, sound_set, new_commits = self._evaluate_round_boundary(judged_stage)
 
-        emitted_sound_set = self.current_sound_set
         if sound_set is not None:
             self.current_sound_set = sound_set
-            emitted_sound_set = sound_set
 
-        # The sound set derived at this boundary is the row we advertise for
-        # the currently pending stage and exchange for the next round's
-        # boundary evaluation.
-        self.evidence_stage.sound_bitmap = emitted_sound_set
-        self.evidence_stage.sound_matrix[self.node_id] = emitted_sound_set
+        # The row we advertise is the observation accumulated during the stage's
+        # OWN round - literally "these are the peers I heard from in round N" -
+        # not the sound set this boundary just derived. previous_stage.row
+        # already holds it, built up by receive(); all that is left is to file it
+        # as our own entry in the matrix that will judge this stage.
+        #
+        # Advertising the derived sound set instead would make every node emit
+        # the same value even when their receptions differed, hiding asymmetric
+        # loss from everyone but its victim. Emitting the raw observation makes
+        # divergence visible in the matrix, and attributable to a node.
+        self.previous_stage.rows[self.node_id] = self.previous_stage.row
         self.current_stage = self._new_current_stage(new_round)
 
         # 4. If the decision is to halt, update status and emit control plane event, 
@@ -423,7 +469,7 @@ class Node:
             round_id=new_round,
             src_id=self.node_id,
             run_id=self.run_id,
-            sound_bitmap=self.evidence_stage.sound_bitmap,
+            row=self.previous_stage.row,
             payload=self.current_stage.proposals[self.node_id],
         )
         outbound = OutboundPacket(
@@ -434,8 +480,12 @@ class Node:
 
     # !!!!!!! IMPORTANT !!!!!!! 
     # The logic in this method encodes the core safety rules of the protocol.
-    def _evaluate_round_boundary(self) -> tuple[str, int | None, tuple[CommittedRound, ...]]:
-        stage = self.commit_stage
+    def _evaluate_round_boundary(
+        self,
+        stage: RoundStage | None = None,
+    ) -> tuple[str, int | None, tuple[CommittedRound, ...]]:
+        if stage is None:
+            stage = self.commit_stage
         if stage.round_id < 0:
             return "SKIP", None, ()
 
@@ -443,7 +493,7 @@ class Node:
         commit_set = self._commit_set(stage)
         sound_set = self._sound_set(stage)
         agreed_row = self._agreed_row(stage)
-        local_row = stage.sound_matrix.get(self.node_id, 0)
+        local_row = stage.rows.get(self.node_id, 0)
         previous_sound_set = self.current_sound_set
 
         # 1. If there is no agreed row, or if the commit set or sound set cannot be formed,
@@ -511,11 +561,11 @@ class Node:
             return
 
         if packet.round_id == self.current_round:
-            self.current_stage.sound_bitmap |= 1 << packet.src_id
+            self.current_stage.row |= 1 << packet.src_id
             self.current_stage.proposals[packet.src_id] = packet.payload
             # The sender's current-round sound bitmap becomes row evidence for
             # the next boundary evaluation of the currently pending stage.
-            self.evidence_stage.sound_matrix[packet.src_id] = packet.sound_bitmap
+            self.previous_stage.rows[packet.src_id] = packet.row
             return
 
         if packet.round_id < self.current_round - 1:

@@ -73,43 +73,44 @@ module proposal_dma_reader #
     input  wire                                     s_axis_dma_read_desc_status_valid,
 
     // Tail slot interface from proposal_buffer
-    input  wire                                             tail_slot_valid,
-    input  wire [RAM_ADDR_WIDTH-1:0]                        tail_slot_addr,
-    input  wire [DMA_LEN_WIDTH-1:0]                         tail_slot_len,
-
-    // Slot commit interface to proposal_buffer
-    output wire                                             commit_valid,
-    input  wire                                             commit_ready
+    input  wire                                     tail_slot_valid,
+    input  wire [RAM_ADDR_WIDTH-1:0]                tail_slot_addr,
+    output wire                                     tail_slot_commit
 );
 
 // =========================================================================
 //                  Register for Output Control and Status
 // =========================================================================
 // Register Map:
+// --- Read-only Identification and configuration registers
 // - 0x000: MAGIC           [0x70717565/proq]   - Magic value to identify the proposal queue
-// - 0x004: VERSION         [0x00010000/1.0]    - Version number of the proposal queue implementation (not implemented in this example, always returns 1.0)
-// - 0x008: FEATURES        [0x00000001]        - Bitfield of supported features (not implemented in this example, always returns 1 to indicate basic functionality)
-// - 0x00C: CONTROL         
-// - 0x010: STATUS
-// - 0x014: SCRATCH
-// - 0x018: ENTRY_COUNTER
+// - 0x004: VERSION         [0x00010000/1.0]    - Version number of the proposal queue implementation 
+// - 0x008: FEATURES        [0x00000001]        - Bitfield of supported features 
+// - 0x00C: SLOT_BYTES      [0x00000400/1024] - Size of each proposal slot in bytes 
 //
-// - 0x100: BATCH_ADDR_LO          - Lower 32 bits of base address for proposal batch DMA
-// - 0x104: BATCH_ADDR_HI          - Upper 32 bits of base address for proposal batch DMA
-// - 0x108: BATCH_LEN              - Length of each proposal entry in bytes
-// - 0x10C: BATCH_STRIDE_LO       - Lower 32 bits of stride between proposal entries
-// - 0x110: BATCH_STRIDE_HI       - Upper 32 bits of stride between proposal entries
-// - 0x114: BATCH_COUNT            - Number of proposal entries to fetch in the batch
-// - 0x118: BATCH_CONTROL           - Control register for starting/stopping the proposal batch DMA
+// --- Control and status registers
+// - 0x010: CONTROL             [0x00000000]        - Control register for the proposal queue (reserved for future use)
+// - 0x014: STATUS              [0x00000000]        - Status register for the proposal queue
+// - 0x018: ENTRY_COUNTER_LO    [0x00000000]        - Lower 32 bits of the proposal entry counter
+// - 0x01C: ENTRY_COUNTER_HI    [0x00000000]        - Upper 32 bits of the proposal entry counter
+//
+// -- DMA descriptor registers
+// - 0x100: DMA_ADDR_LO          - Lower 32 bits of base address for proposal batch DMA
+// - 0x104: DMA_ADDR_HI          - Upper 32 bits of base address for proposal batch DMA
+// - 0x108: DMA_LEN              - Length of each proposal entry in bytes
+// - 0x10C: DMA_STRIDE_LO       - Lower 32 bits of stride between proposal entries
+// - 0x110: DMA_STRIDE_HI       - Upper 32 bits of stride between proposal entries
+// - 0x114: DMA_COUNT            - Number of proposal entries to fetch in the batch
+// - 0x118: DMA_CONTROL           - Control register for starting/stopping the proposal batch DMA
 //      bit 0: start
 //      bit 1: clear done
 //      bit 2: clear error
-// - 0x11C: BATCH_STATUS            - Status register for the proposal batch DMA
+// - 0x11C: DMA_STATUS            - Status register for the proposal batch DMA
 //      bit 0: running
 //      bit 1: done
 //      bit 2: error
-// - 0x120: BATCH_ACTIVE_INDEX      - Index of the currently active proposal entry in the batch
-// - 0x124: BATCH_STATE             - Current state of the proposal batch DMA operation
+// - 0x120: DMA_ACTIVE_INDEX      - Index of the currently active proposal entry in the batch
+// - 0x124: DMA_STATE             - Current state of the proposal batch DMA operation
 // - 0x128: DMA_STATUS_TAG              - Tag of the last completed DMA read descriptor
 // - 0x12C: DMA_STATUS_ERROR            - Error code of the last completed DMA read descriptor
 // - 0x130: DMA_STATUS_VALID            - Valid flag for the last completed DMA read descriptor
@@ -137,35 +138,40 @@ end
 //                  Internal signals and registers
 // =========================================================================
 localparam integer RBB = RB_BASE_ADDR;
-// global
+// --- Identification and configuration registers
 localparam REG_MAGIC            = RBB + 12'h000;
 localparam REG_VERSION          = RBB + 12'h004;
 localparam REG_FEATURES         = RBB + 12'h008;
-localparam REG_CONTROL          = RBB + 12'h00C;
-localparam REG_STATUS           = RBB + 12'h010;
-localparam REG_SCRATCH          = RBB + 12'h014;
-localparam REG_ENTRY_COUNTER    = RBB + 12'h018;
-// DMA descriptor registers
-localparam REG_BATCH_BASE_ADDR_LO      = RBB + 12'h100;
-localparam REG_BATCH_BASE_ADDR_HI      = RBB + 12'h104;
-localparam REG_BATCH_SLOT_LEN          = RBB + 12'h108;
-localparam REG_BATCH_STRIDE_LO    = RBB + 12'h10C;
-localparam REG_BATCH_STRIDE_HI    = RBB + 12'h110;
-localparam REG_BATCH_COUNT        = RBB + 12'h114;
-localparam REG_BATCH_CONTROL      = RBB + 12'h118;
-localparam REG_BATCH_STATUS       = RBB + 12'h11C;
-localparam REG_BATCH_ACTIVE_INDEX = RBB + 12'h120;
-localparam REG_BATCH_STATE        = RBB + 12'h124;
+localparam REG_SLOT_BYTES       = RBB + 12'h00C;
+
+// --- Control and status registers
+localparam REG_CONTROL          = RBB + 12'h010;
+localparam REG_STATUS           = RBB + 12'h014;
+localparam REG_ENTRY_COUNTER_LO = RBB + 12'h018;
+localparam REG_ENTRY_COUNTER_HI = RBB + 12'h01C;
+
+// --- DMA descriptor registers
+localparam REG_DMA_ADDR_LO      = RBB + 12'h100;
+localparam REG_DMA_ADDR_HI      = RBB + 12'h104;
+localparam REG_DMA_LEN          = RBB + 12'h108;
+localparam REG_DMA_STRIDE_LO    = RBB + 12'h10C;
+localparam REG_DMA_STRIDE_HI    = RBB + 12'h110;
+localparam REG_DMA_COUNT        = RBB + 12'h114;
+localparam REG_DMA_CONTROL      = RBB + 12'h118;
+localparam REG_DMA_STATUS       = RBB + 12'h11C;
+localparam REG_DMA_ACTIVE_INDEX = RBB + 12'h120;
+localparam REG_DMA_STATE        = RBB + 12'h124;
 localparam REG_DMA_STATUS_TAG     = RBB + 12'h128;
 localparam REG_DMA_STATUS_ERROR   = RBB + 12'h12C;
 localparam REG_DMA_STATUS_VALID   = RBB + 12'h130;
 
+// state machine states
 localparam [2:0]
     STATE_IDLE  = 3'd0,
     STATE_ISSUE_DMA = 3'd1,
     STATE_WAIT_DMA = 3'd2,
     STATE_COMMIT_SLOT = 3'd3,
-    STATE_DONE = 3'd4;
+    STATE_ERROR = 3'd5;
 
 reg [2:0] state_reg = STATE_IDLE, state_next;
 
@@ -195,9 +201,9 @@ reg [DMA_ADDR_WIDTH-1:0]    prop_batch_offset_reg = 0, prop_batch_offset_next;
 reg [DMA_ADDR_WIDTH-1:0]    prop_batch_stride_reg = 0, prop_batch_stride_next;
 //reg [DMA_LEN_WIDTH-1:0]     prop_batch_len_reg = 0, prop_batch_len_next;
 reg [31:0]                  prop_batch_count_reg = 0, prop_batch_count_next;
-reg [31:0]                  prop_batch_active_index_reg = 0, prop_batch_active_index_next;
+reg [31:0]                  prop_batch_active_index_reg = 0, prop_batch_active_index_next;   
 
-assign commit_valid = (state_reg == STATE_COMMIT_SLOT);
+reg     tail_slot_commit_reg = 1'b0, tail_slot_commit_next;
 
 wire dma_read_status_match = s_axis_dma_read_desc_status_valid && (s_axis_dma_read_desc_status_tag == dma_read_desc_tag_reg);
 
@@ -236,6 +242,7 @@ always @* begin
     
     scratch_reg_next = scratch_reg;
     proposal_entry_counter_next = proposal_entry_counter_reg;
+    tail_slot_commit_next = 1'b0;
 
     // ----------------------------------------------------------
     //       Control and status register read/write handling
@@ -245,42 +252,25 @@ always @* begin
         reg_wr_ack_next = 1'b1; // acknowledge the write
         case ({reg_wr_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
             // Header registers (read-only)
-            REG_MAGIC: ; // PROP_FETCH_MAGIC is read-only
-            REG_VERSION: ; // PROP_FETCH_VERSION is read-only
-            REG_FEATURES: ; // PROP_FETCH_FEATURES is read-only
-            REG_CONTROL: ; // PROP_FETCH_CTRL is reserved for future use
-            REG_STATUS: ; // PROP_FETCH_STATUS is reserved for future use
-            REG_SCRATCH: scratch_reg_next = reg_wr_data; // Write to scratch register for testing
-            REG_ENTRY_COUNTER: ; // PROP_FETCH_PROPOSAL_ENTRY_COUNTER is read-only
+            REG_MAGIC: ; // read-only
+            REG_VERSION: ; // read-only
+            REG_FEATURES: ; // read-only
+            REG_SLOT_BYTES: ; // read-only
+
+            // Control and status registers
+            REG_CONTROL: ; // reserved, writes ignored
+            REG_STATUS: ; // read-only
+            REG_ENTRY_COUNTER_LO: ; // read-only
+            REG_ENTRY_COUNTER_HI: ; // read-only
 
             // DMA descriptor registers
-            REG_BATCH_BASE_ADDR_LO: begin
-                if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
-                    prop_batch_base_addr_next[31:0] = reg_wr_data;
-                end
-            end
-            REG_BATCH_BASE_ADDR_HI: begin
-                if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
-                    prop_batch_base_addr_next[63:32] = reg_wr_data;
-                end
-            end
-            REG_BATCH_SLOT_LEN: ; // fixed slot length in v1, writes ignored
-            REG_BATCH_STRIDE_LO: begin
-                if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
-                    prop_batch_stride_next[31:0] = reg_wr_data;
-                end
-            end
-            REG_BATCH_STRIDE_HI: begin
-                if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
-                    prop_batch_stride_next[63:32] = reg_wr_data;
-                end
-            end
-            REG_BATCH_COUNT: begin
-                if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
-                    prop_batch_count_next = reg_wr_data;
-                end
-            end
-            REG_BATCH_CONTROL: begin
+            REG_DMA_ADDR_LO: prop_batch_base_addr_next[31:0] = reg_wr_data;
+            REG_DMA_ADDR_HI: prop_batch_base_addr_next[63:32] = reg_wr_data;
+            REG_DMA_LEN: ; // fixed slot length in v1, writes ignored
+            REG_DMA_STRIDE_LO: prop_batch_stride_next[31:0] = reg_wr_data;
+            REG_DMA_STRIDE_HI: prop_batch_stride_next[63:32] = reg_wr_data;
+            REG_DMA_COUNT: prop_batch_count_next = reg_wr_data;
+            REG_DMA_CONTROL: begin
                 // bit 0: start
                 if (reg_wr_data[0]) begin
                     if (!prop_batch_run_reg && state_reg == STATE_IDLE) begin
@@ -310,9 +300,9 @@ always @* begin
                     prop_batch_error_next = 1'b0;
                 end
             end
-            REG_BATCH_STATUS: ; // read-only
-            REG_BATCH_ACTIVE_INDEX: ; // read-only
-            REG_BATCH_STATE: ; // read-only
+            REG_DMA_STATUS: ; // read-only
+            REG_DMA_ACTIVE_INDEX: ; // read-only
+            REG_DMA_STATE: ; // read-only
             
             REG_DMA_STATUS_TAG: ; // read-only
             REG_DMA_STATUS_ERROR: ; // read-only
@@ -331,23 +321,25 @@ always @* begin
             REG_MAGIC: reg_rd_data_next = 32'h70726f71; // "proq"
             REG_VERSION: reg_rd_data_next = 32'h00000100; // version 1.0
             REG_FEATURES: reg_rd_data_next = 32'h00000001; // features (bit 0: basic functionality)
+            REG_SLOT_BYTES: reg_rd_data_next = PROPOSAL_SLOT_BYTES_LEN; // size of each proposal slot in bytes
+
             REG_CONTROL: reg_rd_data_next = 32'h00000000; // control register (reserved, returns 0)
             REG_STATUS: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg}; // status register
-            REG_SCRATCH: reg_rd_data_next = scratch_reg; // read from scratch register for testing
-            REG_ENTRY_COUNTER: reg_rd_data_next = proposal_entry_counter_reg; // read from proposal entry counter
+            REG_ENTRY_COUNTER_LO: reg_rd_data_next = proposal_entry_counter_reg[31:0];
+            REG_ENTRY_COUNTER_HI: reg_rd_data_next = 32'h0; //TODO: Implement high word read
 
             // DMA descriptor registers
-            REG_BATCH_BASE_ADDR_LO: reg_rd_data_next = prop_batch_base_addr_reg[31:0];
-            REG_BATCH_BASE_ADDR_HI: reg_rd_data_next = prop_batch_base_addr_reg[63:32];
-            REG_BATCH_SLOT_LEN: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_LEN_WIDTH){1'b0}}, PROPOSAL_SLOT_BYTES_LEN}; // fixed slot length in v1
-            REG_BATCH_STRIDE_LO: reg_rd_data_next = prop_batch_stride_reg[31:0];
-            REG_BATCH_STRIDE_HI: reg_rd_data_next = prop_batch_stride_reg[63:32];
-            REG_BATCH_COUNT: reg_rd_data_next = prop_batch_count_reg;
+            REG_DMA_ADDR_LO: reg_rd_data_next = prop_batch_base_addr_reg[31:0];
+            REG_DMA_ADDR_HI: reg_rd_data_next = prop_batch_base_addr_reg[63:32];
+            REG_DMA_LEN: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_LEN_WIDTH){1'b0}}, PROPOSAL_SLOT_BYTES_LEN}; // fixed slot length in v1
+            REG_DMA_STRIDE_LO: reg_rd_data_next = prop_batch_stride_reg[31:0];
+            REG_DMA_STRIDE_HI: reg_rd_data_next = prop_batch_stride_reg[63:32];
+            REG_DMA_COUNT: reg_rd_data_next = prop_batch_count_reg;
 
-            REG_BATCH_CONTROL: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
-            REG_BATCH_STATUS: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
-            REG_BATCH_ACTIVE_INDEX: reg_rd_data_next = prop_batch_active_index_reg;
-            REG_BATCH_STATE: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, state_reg};
+            REG_DMA_CONTROL: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
+            REG_DMA_STATUS: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, prop_batch_error_reg, prop_batch_done_reg, prop_batch_run_reg};
+            REG_DMA_ACTIVE_INDEX: reg_rd_data_next = prop_batch_active_index_reg;
+            REG_DMA_STATE: reg_rd_data_next = {{(REG_DATA_WIDTH - 3){1'b0}}, state_reg};
             
             REG_DMA_STATUS_TAG: reg_rd_data_next = {{(REG_DATA_WIDTH - DMA_TAG_WIDTH){1'b0}}, dma_read_desc_status_tag_reg};
             REG_DMA_STATUS_ERROR: reg_rd_data_next = {{(REG_DATA_WIDTH - 4){1'b0}}, dma_read_desc_status_error_reg};
@@ -369,33 +361,45 @@ always @* begin
                 if (prop_batch_count_reg != 0) begin
                     state_next = STATE_ISSUE_DMA;
                 end else begin
+                    // invalid batch count, stay in idle state and clear the run flag
                     prop_batch_run_next = 1'b0;
                     prop_batch_done_next = 1'b1;
-                    state_next = STATE_DONE;
+                    state_next = STATE_IDLE;
                 end
             end
         end
 
         // Issue DMA read descriptor for the current proposal entry
         STATE_ISSUE_DMA: begin
-            if (tail_slot_valid &&
-                tail_slot_len != {DMA_LEN_WIDTH{1'b0}} &&
-                (!dma_read_desc_valid_reg || m_axis_dma_read_desc_ready)) begin
-            
-            dma_read_desc_dma_addr_next = prop_batch_base_addr_reg + prop_batch_offset_reg;
-            dma_read_desc_ram_addr_next = tail_slot_addr;
-            dma_read_desc_len_next = tail_slot_len;
-            dma_read_desc_tag_next = DMA_TAG_PROP_VALUE + prop_batch_active_index_reg[DMA_TAG_WIDTH-1:0];
-            dma_read_desc_valid_next = 1'b1;
+            // !tail_slot_commit_reg is load-bearing. STATE_COMMIT_SLOT sets both
+            // tail_slot_commit_next and state_next=STATE_ISSUE_DMA, so they take
+            // effect on the SAME edge: the cycle we first arrive here is the
+            // cycle our own commit pulse is being presented to proposal_buffer,
+            // and its tail_ptr_reg has not moved yet. Sampling tail_slot_addr
+            // then aims the next descriptor at the slot we just committed, and
+            // the DMA overwrites a proposal that is already queued to transmit.
+            // Waiting one cycle lets the buffer retire the commit first.
+            if (tail_slot_valid && !tail_slot_commit_reg &&
+                (!dma_read_desc_valid_reg || m_axis_dma_read_desc_ready)) 
+            begin
+                dma_read_desc_dma_addr_next = prop_batch_base_addr_reg + prop_batch_offset_reg;
+                dma_read_desc_ram_addr_next = tail_slot_addr;
+                dma_read_desc_len_next      = PROPOSAL_SLOT_BYTES_LEN;
+                dma_read_desc_tag_next      = DMA_TAG_PROP_VALUE + prop_batch_active_index_reg[DMA_TAG_WIDTH-1:0];
+                dma_read_desc_valid_next    = 1'b1;
 
-            state_next = STATE_WAIT_DMA;
+                state_next = STATE_WAIT_DMA;
+            end else begin
+                // Wait for a valid tail slot from proposal_buffer
+                dma_read_desc_valid_next = 1'b0;
+                state_next = STATE_ISSUE_DMA;
             end
         end
 
         // Wait for DMA read completion status
         STATE_WAIT_DMA: begin
             if (dma_read_status_match) begin
-                dma_read_desc_status_tag_next = s_axis_dma_read_desc_status_tag;
+                dma_read_desc_status_tag_next   = s_axis_dma_read_desc_status_tag;
                 dma_read_desc_status_error_next = s_axis_dma_read_desc_status_error;
                 dma_read_desc_status_valid_next = 1'b1;
 
@@ -407,33 +411,33 @@ always @* begin
                     prop_batch_run_next = 1'b0;
                     prop_batch_done_next = 1'b1;
                     prop_batch_error_next = 1'b1;
-                    state_next = STATE_DONE;
+                    state_next = STATE_ERROR; // something went wrong, go to error state
                 end
             end
         end
 
         // Commit the slot in proposal_buffer after successful DMA completion
         STATE_COMMIT_SLOT: begin
-            if (commit_ready) begin
-                proposal_entry_counter_next = proposal_entry_counter_reg + 1'b1;
-                prop_batch_offset_next = prop_batch_offset_reg + prop_batch_stride_reg;
-                prop_batch_active_index_next = prop_batch_active_index_reg + 1'b1;
-                prop_batch_count_next = prop_batch_count_reg - 1'b1;
+            tail_slot_commit_next       = 1'b1; // signal to commit the tail slot
 
-                if (prop_batch_count_reg == 1) begin
-                    // Last proposal entry in the batch
-                    prop_batch_run_next = 1'b0;
-                    prop_batch_done_next = 1'b1;
-                    state_next = STATE_DONE;
-                end else begin
-                    // More proposal entries to fetch
-                    state_next = STATE_ISSUE_DMA;
-                end
+            proposal_entry_counter_next = proposal_entry_counter_reg + 1'b1;
+            prop_batch_offset_next      = prop_batch_offset_reg + prop_batch_stride_reg;
+            prop_batch_active_index_next = prop_batch_active_index_reg + 1'b1;
+            prop_batch_count_next       = prop_batch_count_reg - 1'b1;
+
+            if (prop_batch_count_reg == 1) begin
+                // Last proposal entry in the batch
+                prop_batch_run_next     = 1'b0;
+                prop_batch_done_next    = 1'b1;
+
+                state_next = STATE_IDLE;
+            end else begin
+                // More proposal entries to fetch
+                state_next = STATE_ISSUE_DMA;
             end
         end
 
-        // Batch operation completed (either successfully or with error)
-        STATE_DONE: begin
+        STATE_ERROR: begin
             state_next = STATE_IDLE;
         end
 
@@ -477,6 +481,8 @@ always @(posedge clk) begin
     prop_batch_count_reg <= prop_batch_count_next;
     prop_batch_active_index_reg <= prop_batch_active_index_next;
 
+    tail_slot_commit_reg <= tail_slot_commit_next;
+
     if (rst) begin
         state_reg <= STATE_IDLE;
 
@@ -507,6 +513,8 @@ always @(posedge clk) begin
         //prop_batch_len_reg <= {DMA_LEN_WIDTH{1'b0}};
         prop_batch_count_reg <= 32'b0;
         prop_batch_active_index_reg <= 32'b0;
+
+        tail_slot_commit_reg <= 1'b0;
     end
 end
 
@@ -525,6 +533,8 @@ assign m_axis_dma_read_desc_ram_addr    = dma_read_desc_ram_addr_reg;
 assign m_axis_dma_read_desc_len         = dma_read_desc_len_reg;
 assign m_axis_dma_read_desc_tag         = dma_read_desc_tag_reg;
 assign m_axis_dma_read_desc_valid       = dma_read_desc_valid_reg;
+
+assign tail_slot_commit = tail_slot_commit_reg;
 
 endmodule
 

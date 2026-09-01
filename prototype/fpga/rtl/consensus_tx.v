@@ -32,9 +32,9 @@ module consensus_tx #(
 
     // Control and Data
     input wire                              i_tx_allowed,
-    input wire [63:0]                       i_current_slot_id,
-    input wire [63:0]                       i_current_run_id,
-    input wire [P_NODE_COUNT-1:0]           i_knowledge_vec,
+    input wire [63:0]                       i_current_slot_id,  // round
+    input wire [63:0]                       i_current_run_id,   // run
+    input wire [P_NODE_COUNT-1:0]           i_knowledge_vec,    // sound set
     output reg                              o_tx_start,
 
     // AXI Stream Master Output
@@ -122,7 +122,7 @@ always @(*) begin
     v_packet_flit = {P_DATA_WIDTH{1'b0}};
 
     // ------- Ethernet Header -------
-    v_packet_flit[7:0]       = v_dest_mac[47:40];
+    v_packet_flit[7:0]        = v_dest_mac[47:40];
     v_packet_flit[15:8]       = v_dest_mac[39:32];
     v_packet_flit[23:16]      = v_dest_mac[31:24];
     v_packet_flit[31:24]      = v_dest_mac[23:16];
@@ -133,8 +133,8 @@ always @(*) begin
     v_packet_flit[63:56]      = P_SRC_MAC[39:32];
     v_packet_flit[71:64]      = P_SRC_MAC[31:24];
     v_packet_flit[79:72]      = P_SRC_MAC[23:16];
-    v_packet_flit[87:80]     = P_SRC_MAC[15:8];
-    v_packet_flit[95:88]     = P_SRC_MAC[7:0];
+    v_packet_flit[87:80]      = P_SRC_MAC[15:8];
+    v_packet_flit[95:88]      = P_SRC_MAC[7:0];
 
     v_packet_flit[12*8 +: 16] = to_big_endian_16(P_ETHERNET_TYPE);
 

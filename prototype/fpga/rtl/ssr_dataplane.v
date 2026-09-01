@@ -112,8 +112,13 @@ module ssr_dataplane #
     parameter AXIS_IF_RX_ID_WIDTH = PORTS_PER_IF > 1 ? $clog2(PORTS_PER_IF) : 1,
     parameter AXIS_IF_TX_DEST_WIDTH = $clog2(PORTS_PER_IF) + 4,
     parameter AXIS_IF_RX_DEST_WIDTH = 8,
-    parameter AXIS_IF_TX_USER_WIDTH = 1,
-    parameter AXIS_IF_RX_USER_WIDTH = 1,
+    // These MUST match what mqnic_app_block passes down. They used to default to
+    // 1, which silently dropped the transmit tag out of tuser for anything that
+    // instantiated this module on its defaults - including the shadow copy in
+    // ssr_dataplane_test.v. The tag is what tells an SSR frame's completion from
+    // a host frame's, so a 1-bit tuser makes the completion filter unbuildable.
+    parameter AXIS_IF_TX_USER_WIDTH = TX_TAG_WIDTH + 1,
+    parameter AXIS_IF_RX_USER_WIDTH = (PTP_TS_ENABLE ? PTP_TS_WIDTH : 0) + 1,
 
     // Consensus Parameters
     parameter P_NODE_ID = 0,
@@ -316,9 +321,7 @@ reg                         reg_wr_ack_common_reg  = 1'b0, reg_wr_ack_common_nex
 reg [REG_DATA_WIDTH-1:0]    reg_rd_data_common_reg = 0, reg_rd_data_common_next;
 reg                         reg_rd_ack_common_reg  = 1'b0, reg_rd_ack_common_next;
 
-reg                         reg_wr_ack_consensus_reg  = 1'b0, reg_wr_ack_consensus_next;
-reg [REG_DATA_WIDTH-1:0]    reg_rd_data_consensus_reg = 0, reg_rd_data_consensus_next;
-reg                         reg_rd_ack_consensus_reg  = 1'b0, reg_rd_ack_consensus_next;
+
 
 // register select signals
 wire reg_wr_en_common           = reg_wr_en && reg_wr_addr[REG_ADDR_WIDTH-1:12] == RBB_COMMON[REG_ADDR_WIDTH-1:12];
@@ -341,9 +344,13 @@ assign reg_wr_ack_common = reg_wr_ack_common_reg;
 assign reg_rd_ack_common = reg_rd_ack_common_reg;
 assign reg_rd_data_common = reg_rd_data_common_reg;
 
-assign reg_wr_ack_consensus = reg_wr_ack_consensus_reg;
-assign reg_rd_ack_consensus = reg_rd_ack_consensus_reg;
-assign reg_rd_data_consensus = reg_rd_data_consensus_reg;
+// The consensus register block is now decoded inside consensus_core (core.v),
+// which owns roughly fifty registers - control, config, the halt record and its
+// observation matrix, and the statistics - instead of the six that used to be
+// hand-decoded here. RB_BASE_ADDR is passed RBB_CONSENSUS so the map is
+// unchanged from software's point of view at the block level.
+assign reg_wr_wait_consensus = 1'b0;
+assign reg_rd_wait_consensus = 1'b0;
 
 assign reg_wr_wait_common = 0;
 assign reg_rd_wait_common = 0;
@@ -370,11 +377,6 @@ reg [31:0] replica_num_reg, replica_num_reg_next;
 reg [31:0] round_length_ns_reg, round_length_ns_reg_next;
 reg [31:0] ethernet_port_reg, ethernet_port_reg_next;
 
-reg global_enable_reg, global_enable_reg_next;
-reg [31:0] ctrl_run_id_reg, ctrl_run_id_reg_next;
-reg [31:0] ctrl_membership_reg, ctrl_membership_reg_next;
-reg ctrl_activate_reg, ctrl_activate_reg_next;
-reg ctrl_reboot_reg, ctrl_reboot_reg_next;
 
 // replica MAC table (up to MAX_REPLICAS entries)
 reg [31:0] replica_mac_lo [0:MAX_REPLICAS-1], replica_mac_lo_next [0:MAX_REPLICAS-1];
@@ -386,16 +388,19 @@ wire config_valid = replica_num_reg != 0 &&
                     replica_id_reg < replica_num_reg;
 
 // sink status
-wire [31:0] proposal_sink_slot_count;
-wire [31:0] proposal_sink_beat_count;
-wire [31:0] proposal_sink_error_count;
+// The old consensus_tx exported these; tx_engine's equivalents are wired into
+// the read decode below.
 
 // --------------------------------------------------------------
 //                 Tx Modules
 // --------------------------------------------------------------
 
-wire                            tx_allowed;
-wire [P_NODE_COUNT-1:0]         tx_knowledge_vec;
+// The receive path is still the old consensus_rx this round; it wants a level
+// and a run id, which the new core expresses as the receive window and the run
+// it is currently transmitting under.
+wire rx_enabled_from_core;
+wire round_start_pulse;
+wire round_commit_pulse;
 
 wire [IF_COUNT*AXIS_IF_DATA_WIDTH-1:0]           axis_cons_tx_tdata;
 wire [IF_COUNT*AXIS_IF_KEEP_WIDTH-1:0]           axis_cons_tx_tkeep;
@@ -418,7 +423,6 @@ wire [IF_COUNT*AXIS_IF_RX_ID_WIDTH-1:0]          axis_cons_rx_tid;
 wire [IF_COUNT*AXIS_IF_RX_DEST_WIDTH-1:0]        axis_cons_rx_tdest;
 wire [IF_COUNT*AXIS_IF_RX_USER_WIDTH-1:0]        axis_cons_rx_tuser;
 
-wire rx_enabled;
 wire [7:0] rx_node_id;
 wire [P_NODE_COUNT-1:0] rx_sound_bitmap;
 wire [P_LOG_ITEM_LEN-1:0] rx_run_id;
@@ -430,7 +434,6 @@ wire                            rx_valid;
 //                 Consensus Core
 // --------------------------------------------------------------
 
-wire [63:0] current_run_id;
 wire [63:0] current_round_id;
 wire [63:0] current_slot_id;
 
@@ -535,9 +538,24 @@ always @* begin
             RBB_COMMON + 12'h02c: reg_rd_data_common_next = ethernet_port_reg; // ETHERNET_PORT
 
             // proposal sink debug/status registers
-            RBB_COMMON + 12'h030: reg_rd_data_common_next = proposal_sink_slot_count; // PROPOSAL_SINK_SLOT_COUNT
-            RBB_COMMON + 12'h034: reg_rd_data_common_next = proposal_sink_beat_count; // PROPOSAL_SINK_BEAT_COUNT
-            RBB_COMMON + 12'h038: reg_rd_data_common_next = proposal_sink_error_count; // PROPOSAL_SINK_ERROR_COUNT
+            // --- transmit engine counters ---
+            RBB_COMMON + 12'h030: reg_rd_data_common_next = tx_frame_count;         // TX_FRAME_COUNT
+            RBB_COMMON + 12'h034: reg_rd_data_common_next = tx_empty_count;         // TX_EMPTY_COUNT (nothing to propose)
+            RBB_COMMON + 12'h038: reg_rd_data_common_next = tx_overrun_count;       // TX_OVERRUN_COUNT (frame outlived its sub-slot)
+            RBB_COMMON + 12'h03c: reg_rd_data_common_next = tx_missed_count;        // TX_MISSED_COUNT (a round produced no frame)
+
+            // --- this node's own transmit timestamps ---
+            // The PTP timestamp the port reported for our own frame. Together
+            // with ROUND_LENGTH_NS this is the direct measurement of whether the
+            // TDMA sub-slot lands where consensus_core believes it does.
+            RBB_COMMON + 12'h040: reg_rd_data_common_next = ssr_cpl_ts[31:0];       // TX_CPL_TS_0
+            RBB_COMMON + 12'h044: reg_rd_data_common_next = ssr_cpl_ts[63:32];      // TX_CPL_TS_1
+            RBB_COMMON + 12'h048: reg_rd_data_common_next = ssr_cpl_ts[95:64];      // TX_CPL_TS_2
+            RBB_COMMON + 12'h04c: reg_rd_data_common_next = ssr_cpl_count;          // TX_CPL_COUNT
+            RBB_COMMON + 12'h050: reg_rd_data_common_next = ssr_cpl_overrun;        // TX_CPL_OVERRUN (software sampling too slowly)
+            RBB_COMMON + 12'h054: reg_rd_data_common_next = mux_ssr_frames;         // TX_MUX_SSR_FRAMES
+            RBB_COMMON + 12'h058: reg_rd_data_common_next = mux_dma_frames;         // TX_MUX_DMA_FRAMES
+            RBB_COMMON + 12'h05c: reg_rd_data_common_next = tx_len_mismatch_count;  // TX_LEN_MISMATCH
 
             // replica MAC table entries
             // replica 0
@@ -571,51 +589,8 @@ always @* begin
 end
 
 
-// consensus enable logic
-always @* begin
-    reg_wr_ack_consensus_next     = 1'b0; 
-    reg_rd_data_consensus_next    = 0;
-    reg_rd_ack_consensus_next     = 1'b0;
-
-    global_enable_reg_next      = global_enable_reg;
-    ctrl_run_id_reg_next        = ctrl_run_id_reg;
-    ctrl_membership_reg_next    = ctrl_membership_reg;
-    ctrl_activate_reg_next      = ctrl_activate_reg;
-    ctrl_reboot_reg_next        = ctrl_reboot_reg;
-
-if (reg_wr_en_consensus && !reg_wr_ack_consensus_reg) begin
-        // write operation - decode address and update registers
-        reg_wr_ack_consensus_next = 1'b1; // acknowledge the write
-        case ({reg_wr_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
-            RBB_CONSENSUS + 12'h000: ; // none, halt signal
-            RBB_CONSENSUS + 12'h004: global_enable_reg_next = reg_wr_data[0]; // global enable
-            RBB_CONSENSUS + 12'h008: ctrl_run_id_reg_next = reg_wr_data; // run id
-            RBB_CONSENSUS + 12'h00c: ctrl_membership_reg_next = reg_wr_data; // membership
-            RBB_CONSENSUS + 12'h010: ctrl_activate_reg_next = reg_wr_data[0]; // activate
-            RBB_CONSENSUS + 12'h014: ctrl_reboot_reg_next = reg_wr_data[0]; // reboot
-            default: reg_wr_ack_consensus_next = 1'b0; // invalid address, do not acknowledge
-        endcase
-    end
-
-    if (reg_rd_en_consensus && !reg_rd_ack_consensus_reg) begin
-        // read operation - decode address and return data
-        reg_rd_ack_consensus_next = 1'b1; // acknowledge the read
-        case ({reg_rd_addr[REG_ADDR_WIDTH-1:2], 2'b00}) // align address to 4 bytes
-            RBB_CONSENSUS + 12'h000: reg_rd_data_consensus_next = system_halt;
-            RBB_CONSENSUS + 12'h004: reg_rd_data_consensus_next = global_enable_reg; // global enable
-            RBB_CONSENSUS + 12'h008: reg_rd_data_consensus_next = ctrl_run_id_reg; // run id
-            RBB_CONSENSUS + 12'h00c: reg_rd_data_consensus_next = ctrl_membership_reg; // membership
-            RBB_CONSENSUS + 12'h010: reg_rd_data_consensus_next = ctrl_activate_reg; // activate
-            RBB_CONSENSUS + 12'h014: reg_rd_data_consensus_next = ctrl_reboot_reg; // reboot
-            default: begin
-                reg_rd_data_consensus_next = 0; // invalid address, return 0
-                reg_rd_ack_consensus_next = 1'b0; // do not acknowledge
-            end
-        endcase
-    end
-
-
-end
+// The consensus block's registers are decoded inside core.v; nothing is left
+// to decode here.
 
 // sequential logic to update registers on clock edge
 always @(posedge clk) begin
@@ -624,9 +599,6 @@ always @(posedge clk) begin
         reg_rd_data_common_reg <= 0;
         reg_rd_ack_common_reg  <= 1'b0;
 
-        reg_wr_ack_consensus_reg  <= 1'b0;
-        reg_rd_data_consensus_reg <= 0;
-        reg_rd_ack_consensus_reg  <= 1'b0;
 
         control_reg     <= 0;
         //status_reg <= 0;
@@ -637,11 +609,6 @@ always @(posedge clk) begin
         round_length_ns_reg <= 0;
         ethernet_port_reg   <= 0;
 
-        global_enable_reg <= 0;
-        ctrl_run_id_reg <= 0;
-        ctrl_membership_reg <= 0;
-        ctrl_activate_reg <= 0;
-        ctrl_reboot_reg <= 0;
 
         for (i = 0; i < MAX_REPLICAS; i = i + 1) begin
             replica_mac_lo[i] <= 0;
@@ -652,9 +619,6 @@ always @(posedge clk) begin
         reg_rd_data_common_reg <= reg_rd_data_common_next;
         reg_rd_ack_common_reg  <= reg_rd_ack_common_next;
 
-        reg_wr_ack_consensus_reg  <= reg_wr_ack_consensus_next;
-        reg_rd_data_consensus_reg <= reg_rd_data_consensus_next;
-        reg_rd_ack_consensus_reg  <= reg_rd_ack_consensus_next; 
 
         control_reg     <= control_reg_next;
         //status_reg <= status_reg_next;
@@ -665,11 +629,6 @@ always @(posedge clk) begin
         round_length_ns_reg <= round_length_ns_reg_next;
         ethernet_port_reg   <= ethernet_port_reg_next;
 
-        global_enable_reg <= global_enable_reg_next;
-        ctrl_run_id_reg <= ctrl_run_id_reg_next;
-        ctrl_membership_reg <= ctrl_membership_reg_next;
-        ctrl_activate_reg <= ctrl_activate_reg_next;
-        ctrl_reboot_reg <= ctrl_reboot_reg_next;
 
         for (i = 0; i < MAX_REPLICAS; i = i + 1) begin
             replica_mac_lo[i] <= replica_mac_lo_next[i];
@@ -682,6 +641,86 @@ end
 //                      SSR CORE LOGIC
 // ==============================================================
 
+// consensus_core lives in rtl/core.v, NOT in rtl/consensus_core.v. Both files
+// declare a module of this name; only one may ever be in a file list. core.v is
+// the one with the CSR block, the PTP round generator and the halt record.
+//
+// PTP: the sec/ns split below matches what the old core did. i_ptp_time_valid is
+// tied high because nothing upstream currently reports PTP lock - core.v treats
+// a loss of validity as a timing fault and halts, so wiring a real lock signal
+// here is what turns that protection on. TODO.
+wire [47:0] core_ptp_tod_sec = PTP_SIM ? {32'd0, ptp_sync_ts_rel[47:32]} : ptp_sync_ts_rel[95:48];
+wire [31:0] core_ptp_tod_ns  = PTP_SIM ? {16'd0, ptp_sync_ts_rel[31:16]} : ptp_sync_ts_rel[47:16];
+
+wire        core_tx_start_pulse, core_tx_end_pulse, core_tx_window;
+wire [63:0] core_tx_round_id;
+wire [31:0] core_tx_run_id;
+wire [7:0]  core_tx_row;
+wire        core_rx_accepted;
+wire        core_commit_valid;
+wire [63:0] core_commit_round_id;
+wire [7:0]  core_commit_set;
+
+consensus_core #(
+    .P_NODE_COUNT(P_NODE_COUNT),
+    .P_NODE_ID(P_NODE_ID),
+    .REG_ADDR_WIDTH(REG_ADDR_WIDTH),
+    .REG_DATA_WIDTH(REG_DATA_WIDTH),
+    .REG_STRB_WIDTH(REG_STRB_WIDTH),
+    .RB_BASE_ADDR(RBB_CONSENSUS),
+    .ROUND_LENGTH_NS(P_SLOT_DURATION_NS),
+    .GUARD_TIME_NS(P_GUARD_NS)
+) consensus_core_inst (
+    .clk(clk),
+    .rst(rst),
+    .i_enable(1'b1),
+
+    .i_ptp_tod_sec(core_ptp_tod_sec),
+    .i_ptp_tod_ns(core_ptp_tod_ns),
+    .i_ptp_time_valid(1'b1),
+    .i_ptp_step(1'b0),
+
+    .reg_wr_addr(reg_wr_addr),
+    .reg_wr_data(reg_wr_data),
+    .reg_wr_strb(reg_wr_strb),
+    .reg_wr_en(reg_wr_en_consensus),
+    .reg_wr_wait(),
+    .reg_wr_ack(reg_wr_ack_consensus),
+    .reg_rd_addr(reg_rd_addr),
+    .reg_rd_en(reg_rd_en_consensus),
+    .reg_rd_data(reg_rd_data_consensus),
+    .reg_rd_wait(),
+    .reg_rd_ack(reg_rd_ack_consensus),
+
+    .o_round_id(current_round_id),
+    .o_round_start_pulse(round_start_pulse),
+    .o_round_boundary_pulse(round_commit_pulse),
+    .o_tx_start_pulse(core_tx_start_pulse),
+    .o_tx_end_pulse(core_tx_end_pulse),
+    .o_tx_window(core_tx_window),
+    .o_rx_start_pulse(),
+    .o_rx_end_pulse(),
+    .o_rx_window(rx_enabled_from_core),
+
+    .o_tx_round_id(core_tx_round_id),
+    .o_tx_run_id(core_tx_run_id),
+    .o_tx_row(core_tx_row),
+
+    .i_rx_valid(rx_valid),
+    .i_rx_node_id(rx_node_id),
+    .i_rx_row({{(8-P_NODE_COUNT){1'b0}}, rx_sound_bitmap}),
+    .i_rx_run_id(rx_run_id),
+    .i_rx_round_id({32'd0, rx_round_id}),
+    .o_rx_accepted(core_rx_accepted),
+
+    .o_commit_valid(core_commit_valid),
+    .o_commit_round_id(core_commit_round_id),
+    .o_commit_set(core_commit_set),
+
+    .o_halt(system_halt),
+    .o_time_fault(),
+    .o_time_fault_count()
+);
 
 // ==============================================================
 //                          TX datapath
@@ -689,10 +728,7 @@ end
 
 wire                            proposal_tail_slot_valid;
 wire [RAM_ADDR_WIDTH-1:0]       proposal_tail_slot_addr;
-wire [DMA_LEN_WIDTH-1:0]        proposal_tail_slot_len;
-
-wire proposal_tail_commit_valid;
-wire proposal_tail_commit_ready;
+wire                            proposal_tail_slot_commit;
 
 // proposal -> tx_engine/sink
 wire [RAM_SEG_COUNT*RAM_SEG_DATA_WIDTH-1:0]     proposal_buf_rd_data;
@@ -702,90 +738,133 @@ wire                                            proposal_buf_rd_ready;
 wire                                            proposal_buf_tx_last;
 wire [DMA_LEN_WIDTH-1:0]                        proposal_buf_tx_len;
 
-consensus_tx #(
-    .P_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
-    .P_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
-    .P_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
-    .P_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH),
+// One frame per round: a 64-byte header beat followed by the proposal slot,
+// row for row. The length and the end of the payload both come from
+// proposal_buffer, so this instance carries no slot geometry of its own.
+localparam [15:0] SSR_TX_CPL_TAG = 16'h8000;   // top bit reserved, see ssr_tx_mux
+
+wire [AXIS_IF_DATA_WIDTH-1:0] ssr_tx_tdata;
+wire [AXIS_IF_KEEP_WIDTH-1:0] ssr_tx_tkeep;
+wire                          ssr_tx_tvalid, ssr_tx_tready, ssr_tx_tlast;
+wire [AXIS_IF_TX_USER_WIDTH-1:0] ssr_tx_tuser;
+
+wire                          ssr_local_sof, ssr_local_valid, ssr_local_last;
+wire [63:0]                   ssr_local_round_id;
+wire [15:0]                   ssr_local_len;
+wire [AXIS_IF_DATA_WIDTH-1:0] ssr_local_data;
+wire [31:0] tx_frame_count, tx_empty_count, tx_overrun_count, tx_missed_count;
+wire [31:0] tx_len_mismatch_count, tx_oversize_count;
+
+tx_engine #(
     .P_NODE_ID(P_NODE_ID),
     .P_NODE_COUNT(P_NODE_COUNT),
-    .P_LOG_ITEM_LEN(P_LOG_ITEM_LEN)
-) consensus_tx_inst (
+    .P_MAX_PAYLOAD_BYTES(RAM_BUFF_SLOT_BYTES),
+    .AXIS_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
+    .AXIS_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
+    .AXIS_USER_WIDTH(AXIS_IF_TX_USER_WIDTH),
+    .P_TX_CPL_TAG(SSR_TX_CPL_TAG),
+    .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
+    .RAM_SEG_COUNT(RAM_SEG_COUNT),
+    .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH)
+) tx_engine_inst (
     .clk(clk),
     .rst(rst),
 
-    .buf_rd_data(proposal_buf_rd_data),
-    .buf_rd_be(proposal_buf_rd_be),
-    .buf_rd_valid(proposal_buf_rd_valid),
-    .buf_rd_ready(proposal_buf_rd_ready),
-    .buf_tx_last(proposal_buf_tx_last),
-    .buf_tx_len(proposal_buf_tx_len),
+    .i_tx_start_pulse(core_tx_start_pulse),
+    .i_tx_window(core_tx_window),
+    .i_tx_end_pulse(core_tx_end_pulse),
+    .i_tx_round_id(core_tx_round_id),
+    .i_tx_run_id(core_tx_run_id),
+    .i_tx_row(core_tx_row),
 
-    .i_tx_allowed(tx_allowed),
-    .i_current_slot_id(current_slot_id),
-    .i_current_run_id(current_run_id),
-    .i_knowledge_vec(tx_knowledge_vec),
-    .o_tx_start(),
+    .i_buf_rd_data(proposal_buf_rd_data),
+    .i_buf_rd_valid(proposal_buf_rd_valid),
+    .o_buf_rd_ready(proposal_buf_rd_ready),
+    .i_buf_tx_last(proposal_buf_tx_last),
+    .i_buf_tx_len(proposal_buf_tx_len),
 
-    .m_axis_tdata(axis_cons_tx_tdata),
-    .m_axis_tkeep(axis_cons_tx_tkeep),
-    .m_axis_tvalid(axis_cons_tx_tvalid),
-    .m_axis_tlast(axis_cons_tx_tlast),
-    .m_axis_tuser(axis_cons_tx_tuser),
-    .m_axis_tid(axis_cons_tx_tid),
-    .m_axis_tdest(axis_cons_tx_tdest),
-    .m_axis_tready(axis_cons_tx_tready),
+    .m_axis_tdata(ssr_tx_tdata),
+    .m_axis_tkeep(ssr_tx_tkeep),
+    .m_axis_tvalid(ssr_tx_tvalid),
+    .m_axis_tready(ssr_tx_tready),
+    .m_axis_tlast(ssr_tx_tlast),
+    .m_axis_tuser(ssr_tx_tuser),
 
-    .tx_slot_count(proposal_sink_slot_count),
-    .tx_beat_count(proposal_sink_beat_count),
-    .tx_error_count(proposal_sink_error_count)
+    .o_local_sof(ssr_local_sof),
+    .o_local_round_id(ssr_local_round_id),
+    .o_local_len(ssr_local_len),
+    .o_local_valid(ssr_local_valid),
+    .o_local_data(ssr_local_data),
+    .o_local_last(ssr_local_last),
+
+    .o_frame_count(tx_frame_count),
+    .o_empty_count(tx_empty_count),
+    .o_overrun_count(tx_overrun_count),
+    .o_missed_count(tx_missed_count),
+    .o_len_mismatch_count(tx_len_mismatch_count),
+    .o_oversize_count(tx_oversize_count)
 );
 
-consensus_tx_arbiter #(
+wire [95:0] ssr_cpl_ts;
+wire [31:0] ssr_cpl_count, ssr_cpl_overrun, mux_ssr_frames, mux_dma_frames;
+
+ssr_tx_mux #(
     .AXIS_DATA_WIDTH(AXIS_IF_DATA_WIDTH),
     .AXIS_KEEP_WIDTH(AXIS_IF_KEEP_WIDTH),
-    .AXIS_TX_USER_WIDTH(AXIS_IF_TX_USER_WIDTH),
-    .AXIS_IF_TX_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
-    .AXIS_IF_TX_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH)
-) consensus_tx_arbiter_inst (
-    .s_axis_cons_tx_tdata(axis_cons_tx_tdata),
-    .s_axis_cons_tx_tkeep(axis_cons_tx_tkeep),
-    .s_axis_cons_tx_tvalid(axis_cons_tx_tvalid),
-    .s_axis_cons_tx_tlast(axis_cons_tx_tlast),
-    .s_axis_cons_tx_tuser(axis_cons_tx_tuser),
-    .s_axis_cons_tx_tid(axis_cons_tx_tid),
-    .s_axis_cons_tx_tdest(axis_cons_tx_tdest),
-    .s_axis_cons_tx_tready(axis_cons_tx_tready),
+    .AXIS_ID_WIDTH(AXIS_IF_TX_ID_WIDTH),
+    .AXIS_DEST_WIDTH(AXIS_IF_TX_DEST_WIDTH),
+    .TX_TAG_WIDTH(TX_TAG_WIDTH),
+    .AXIS_USER_WIDTH(AXIS_IF_TX_USER_WIDTH),
+    .PTP_TS_WIDTH(PTP_TS_WIDTH),
+    .P_SSR_TAG_BIT(15)
+) ssr_tx_mux_inst (
+    .clk(clk),
+    .rst(rst),
 
-    .s_axis_dma_tx_tdata(s_axis_if_tx_tdata),
-    .s_axis_dma_tx_tkeep(s_axis_if_tx_tkeep),
-    .s_axis_dma_tx_tvalid(s_axis_if_tx_tvalid),
-    .s_axis_dma_tx_tlast(s_axis_if_tx_tlast),
-    .s_axis_dma_tx_tuser(s_axis_if_tx_tuser),
-    .s_axis_dma_tx_tid(s_axis_if_tx_tid),
-    .s_axis_dma_tx_tdest(s_axis_if_tx_tdest),
-    .s_axis_dma_tx_tready(s_axis_if_tx_tready),
+    .s_axis_ssr_tdata(ssr_tx_tdata),
+    .s_axis_ssr_tkeep(ssr_tx_tkeep),
+    .s_axis_ssr_tvalid(ssr_tx_tvalid),
+    .s_axis_ssr_tready(ssr_tx_tready),
+    .s_axis_ssr_tlast(ssr_tx_tlast),
+    .s_axis_ssr_tuser(ssr_tx_tuser),
+    .s_axis_ssr_tid({AXIS_IF_TX_ID_WIDTH{1'b0}}),
+    .s_axis_ssr_tdest({AXIS_IF_TX_DEST_WIDTH{1'b0}}),
 
-    // TX CPL from MAC
+    .s_axis_dma_tdata(s_axis_if_tx_tdata),
+    .s_axis_dma_tkeep(s_axis_if_tx_tkeep),
+    .s_axis_dma_tvalid(s_axis_if_tx_tvalid),
+    .s_axis_dma_tready(s_axis_if_tx_tready),
+    .s_axis_dma_tlast(s_axis_if_tx_tlast),
+    .s_axis_dma_tuser(s_axis_if_tx_tuser),
+    .s_axis_dma_tid(s_axis_if_tx_tid),
+    .s_axis_dma_tdest(s_axis_if_tx_tdest),
+
+    .m_axis_tx_tdata(m_axis_if_tx_tdata),
+    .m_axis_tx_tkeep(m_axis_if_tx_tkeep),
+    .m_axis_tx_tvalid(m_axis_if_tx_tvalid),
+    .m_axis_tx_tready(m_axis_if_tx_tready),
+    .m_axis_tx_tlast(m_axis_if_tx_tlast),
+    .m_axis_tx_tuser(m_axis_if_tx_tuser),
+    .m_axis_tx_tid(m_axis_if_tx_tid),
+    .m_axis_tx_tdest(m_axis_if_tx_tdest),
+
     .s_axis_tx_cpl_ts(s_axis_if_tx_cpl_ts),
     .s_axis_tx_cpl_tag(s_axis_if_tx_cpl_tag),
     .s_axis_tx_cpl_valid(s_axis_if_tx_cpl_valid),
     .s_axis_tx_cpl_ready(s_axis_if_tx_cpl_ready),
 
-    // TX CPL to DMA
     .m_axis_tx_cpl_ts(m_axis_if_tx_cpl_ts),
     .m_axis_tx_cpl_tag(m_axis_if_tx_cpl_tag),
     .m_axis_tx_cpl_valid(m_axis_if_tx_cpl_valid),
     .m_axis_tx_cpl_ready(m_axis_if_tx_cpl_ready),
 
-    .m_axis_tx_tdata(m_axis_if_tx_tdata),
-    .m_axis_tx_tkeep(m_axis_if_tx_tkeep),
-    .m_axis_tx_tvalid(m_axis_if_tx_tvalid),
-    .m_axis_tx_tlast(m_axis_if_tx_tlast),
-    .m_axis_tx_tuser(m_axis_if_tx_tuser),
-    .m_axis_tx_tready(m_axis_if_tx_tready),
-    .m_axis_tx_tid(m_axis_if_tx_tid),
-    .m_axis_tx_tdest(m_axis_if_tx_tdest)
+    .o_ssr_cpl_ts(ssr_cpl_ts),
+    .o_ssr_cpl_count(ssr_cpl_count),
+    .o_ssr_cpl_overrun(ssr_cpl_overrun),
+    .i_ssr_cpl_ack(1'b0),
+
+    .o_ssr_frame_count(mux_ssr_frames),
+    .o_dma_frame_count(mux_dma_frames)
 );
 
 
@@ -843,11 +922,7 @@ proposal_dma_reader_inst (
     // proposal tail slot interface
     .tail_slot_valid(proposal_tail_slot_valid),
     .tail_slot_addr(proposal_tail_slot_addr),
-    .tail_slot_len(proposal_tail_slot_len),
-
-    // proposal tail commit interface
-    .commit_valid(proposal_tail_commit_valid),
-    .commit_ready(proposal_tail_commit_ready)
+    .tail_slot_commit(proposal_tail_slot_commit)
 );
 
 // -------------------------------------------------
@@ -885,11 +960,7 @@ proposal_buffer_inst (
     // Writable tail slot
     .tail_slot_valid(proposal_tail_slot_valid),
     .tail_slot_addr(proposal_tail_slot_addr),
-    .tail_slot_len(proposal_tail_slot_len),
-
-    // Commit completed slot
-    .tail_commit_valid(proposal_tail_commit_valid),
-    .tail_commit_ready(proposal_tail_commit_ready),
+    .tail_slot_commit(proposal_tail_slot_commit),
 
     // Stream to tx_engine/sink
     .buf_rd_data(proposal_buf_rd_data),
@@ -899,40 +970,6 @@ proposal_buffer_inst (
     .buf_tx_last(proposal_buf_tx_last),
     .buf_tx_len(proposal_buf_tx_len)
 );
-
-
-// -------------------------------------------------
-//     instance of proposal buffer sink
-// -------------------------------------------------
-// proposal_buffer_sink #(
-//     .DMA_LEN_WIDTH(DMA_LEN_WIDTH),
-
-//     .RAM_SEG_COUNT(RAM_SEG_COUNT),
-//     .RAM_SEG_DATA_WIDTH(RAM_SEG_DATA_WIDTH),
-//     .RAM_SEG_BE_WIDTH(RAM_SEG_BE_WIDTH),
-
-//     .PROPOSAL_SLOT_BYTES(PROPOSAL_SLOT_BYTES)
-// )
-// proposal_buffer_sink_inst (
-//     .clk(clk),
-//     .rst(rst),
-
-//     // read interface from proposal buffer
-//     .buf_rd_data(proposal_buf_rd_data),
-//     .buf_rd_be(proposal_buf_rd_be),
-//     .buf_rd_valid(proposal_buf_rd_valid),
-//     .buf_rd_ready(proposal_buf_rd_ready),
-//     .buf_tx_last(proposal_buf_tx_last),
-//     .buf_tx_len(proposal_buf_tx_len),
-
-//     // Control/status outputs
-//     .sink_enable(proposal_sink_enable),
-//     .sink_clear(proposal_sink_clear),
-
-//     .sink_slot_count(proposal_sink_slot_count),
-//     .sink_beat_count(proposal_sink_beat_count),
-//     .sink_error_count(proposal_sink_error_count)
-// );
 
 // ==============================================================
 //                          RX datapath
@@ -1052,12 +1089,16 @@ commit_dma_writer_inst (
     .s_axis_dma_write_desc_status_error(s_axis_data_dma_write_desc_status_error),
     .s_axis_dma_write_desc_status_valid(s_axis_data_dma_write_desc_status_valid),
 
+    // commit_dma_writer takes the slot length from its own CSR (BUF_SLOT_LEN)
+    // rather than from the buffer, so head_slot_len is deliberately not wired.
+    // head_slot_pop_ready is likewise unused: the writer only pops a slot it has
+    // already seen valid and successfully DMA'd, so the buffer is non-empty by
+    // construction. Both are left dangling on purpose - connecting them was what
+    // stopped this module elaborating at all.
     .head_slot_valid(commit_head_slot_valid),
     .head_slot_addr(commit_head_slot_addr),
-    .head_slot_len(commit_head_slot_len),
 
-    .head_slot_pop_valid(commit_head_slot_pop_valid),
-    .head_slot_pop_ready(commit_head_slot_pop_ready)
+    .head_slot_pop_valid(commit_head_slot_pop_valid)
 );
 
 consensus_rx #(
@@ -1074,9 +1115,9 @@ consensus_rx #(
     .clk(clk),
     .rst(rst),
 
-    .i_rx_enabled(rx_enabled),
+    .i_rx_enabled(rx_enabled_from_core),
     .i_current_round_id(current_slot_id),
-    .i_current_run_id(current_run_id),
+    .i_current_run_id({32'd0, core_tx_run_id}),
 
     .commit_in_data(commit_in_data),
     .commit_in_be(commit_in_be),
@@ -1136,53 +1177,6 @@ consensus_rx_splitter #(
     .m_axis_cons_rx_tdest(axis_cons_rx_tdest),    
     .m_axis_cons_rx_tuser(axis_cons_rx_tuser),
     .m_axis_cons_rx_tready(axis_cons_rx_tready)
-);
-
-// --------------------------------------------------------------
-//                 Consensus Core
-// --------------------------------------------------------------
-consensus_core #(
-    .P_NODE_COUNT(P_NODE_COUNT),
-    .P_NODE_ID(P_NODE_ID),
-    .P_LOG_ITEM_LEN(P_LOG_ITEM_LEN),
-    .P_DATA_WIDTH(P_DATA_WIDTH),
-    .P_SYS_CLOCK_FREQ_HZ(P_SYS_CLOCK_FREQ_HZ),
-    .P_SLOT_DURATION_NS(P_SLOT_DURATION_NS),
-    .P_GUARD_NS(P_GUARD_NS),
-    .PTP_TS_FMT_TOD(PTP_TS_FMT_TOD),
-    .PTP_SIM(PTP_SIM)
-) consensus_core_inst (
-    .clk(clk),
-    .rst(rst),
-
-    // scheduler signals
-    .i_global_enable(global_enable_reg),
-    .ptp_sync_ts(ptp_sync_ts_rel),
-    
-    // data interface
-    .i_rx_valid(rx_valid),
-    .i_rx_node_id(rx_node_id),
-    .i_rx_sound_bitmap(rx_sound_bitmap),
-    .i_rx_run_id(rx_run_id),
-    .i_rx_round_id(rx_round_id),
-
-    // control plane
-    .i_ctrl_run_id(ctrl_run_id_reg),
-    .i_ctrl_membership(ctrl_membership_reg[P_NODE_COUNT-1:0]),
-    .i_ctrl_activate(ctrl_activate_reg),
-    .i_ctrl_reboot(ctrl_reboot_reg),
-
-    // status outputs
-    .o_system_halt(system_halt),
-
-    // data output
-    .o_tx_knowledge_vec(tx_knowledge_vec),
-
-    // transmit trigger
-    .o_tx_allowed(tx_allowed),
-    .o_rx_enabled(rx_enabled),
-    .o_current_round_id(current_round_id),
-    .o_current_run_id(current_run_id)
 );
 
 endmodule

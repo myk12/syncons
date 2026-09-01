@@ -5,765 +5,849 @@ Cocotb driver model for the SSR Corundum application dataplane.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
-from enum import IntFlag
+from dataclasses import dataclass
+from enum import IntFlag, Enum, auto, IntEnum
 from typing import Any
 
+from matplotlib.pyplot import get
+
+import cocotb
 from cocotb.log import SimLog
+from cocotb.triggers import Timer
+from cocotb.utils import get_sim_time
+from cocotb.queue import Queue
 
 import mqnic
 
 
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------
 # Application identity and address regions
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------
 
-SSR_RB_TYPE = 0x53535201
-SSR_RB_VERSION = 0x00000100
+SSR_RB_TYPE     = 0x53535201
+SSR_RB_VERSION  = 0x00000100
 SSR_RB_FEATURES = 0x0000000F
 
-RBB_COMMON = 0x00000000
-RBB_PROPOSAL_QUEUE = 0x00001000
-RBB_COMMIT_QUEUE = 0x00002000
+RBB_COMMON          = 0x00000000
+RBB_PROPOSAL_QUEUE  = 0x00001000
+RBB_COMMIT_QUEUE    = 0x00002000
+RBB_CONSENSUS_CORE  = 0x00003000
 
 
-# -----------------------------------------------------------------------------
-# Common register block
-# -----------------------------------------------------------------------------
+# ----------------------------------------------------------
+#               Common register block
+# ----------------------------------------------------------
 
-COMMON_REG_TYPE = RBB_COMMON + 0x000
-COMMON_REG_VERSION = RBB_COMMON + 0x004
-COMMON_REG_NEXT_PTR = RBB_COMMON + 0x008
-COMMON_REG_FEATURES = RBB_COMMON + 0x00C
-COMMON_REG_CONTROL = RBB_COMMON + 0x010
-COMMON_REG_STATUS = RBB_COMMON + 0x014
-COMMON_REG_ERROR = RBB_COMMON + 0x018
-COMMON_REG_SCRATCH = RBB_COMMON + 0x01C
+COMMON_REG_TYPE         = RBB_COMMON + 0x000
+COMMON_REG_VERSION      = RBB_COMMON + 0x004
+COMMON_REG_NEXT_PTR     = RBB_COMMON + 0x008
+COMMON_REG_FEATURES     = RBB_COMMON + 0x00C
+COMMON_REG_CONTROL      = RBB_COMMON + 0x010
+COMMON_REG_STATUS       = RBB_COMMON + 0x014
+COMMON_REG_ERROR        = RBB_COMMON + 0x018
+COMMON_REG_SCRATCH      = RBB_COMMON + 0x01C
 
-COMMON_REG_CONFIG_REPLICA_ID = RBB_COMMON + 0x020
-COMMON_REG_CONFIG_REPLICA_NUM = RBB_COMMON + 0x024
-COMMON_REG_CONFIG_ROUND_LEN_NS = RBB_COMMON + 0x028
-COMMON_REG_CONFIG_ETH_TYPE = RBB_COMMON + 0x02C
+COMMON_REG_CONFIG_REPLICA_ID    = RBB_COMMON + 0x020
+COMMON_REG_CONFIG_REPLICA_NUM   = RBB_COMMON + 0x024
+COMMON_REG_CONFIG_ROUND_LEN_NS  = RBB_COMMON + 0x028
+COMMON_REG_CONFIG_ETH_TYPE      = RBB_COMMON + 0x02C
 
 COMMON_REG_CONFIG_MACTABLE_ADDR_LO = RBB_COMMON + 0x100
 COMMON_REG_CONFIG_MACTABLE_ADDR_HI = RBB_COMMON + 0x104
-COMMON_MAC_ENTRY_STRIDE = 8
-COMMON_MAX_REPLICAS = 7
+COMMON_MAC_ENTRY_STRIDE     = 8
+COMMON_MAX_REPLICAS         = 7
 
-# Test-only proposal sink
-COMMON_REG_PROPOSAL_SINK_CONTROL = RBB_COMMON + 0x230
-COMMON_REG_PROPOSAL_SINK_SLOT_COUNT = RBB_COMMON + 0x234
-COMMON_REG_PROPOSAL_SINK_BEAT_COUNT = RBB_COMMON + 0x238
-COMMON_REG_PROPOSAL_SINK_ERROR_COUNT = RBB_COMMON + 0x23C
+# ----------------------------------------------------------
+#            Proposal DMA queue
+# ----------------------------------------------------------
 
-# Test-only commit generator
-COMMON_REG_COMMIT_GEN_COUNT = RBB_COMMON + 0x240
-COMMON_REG_COMMIT_GEN_CONTROL = RBB_COMMON + 0x244
-COMMON_REG_COMMIT_GEN_STATUS = RBB_COMMON + 0x248
-COMMON_REG_COMMIT_GEN_GENERATED_SLOT_COUNT = RBB_COMMON + 0x24C
-COMMON_REG_COMMIT_GEN_GENERATED_BEAT_COUNT = RBB_COMMON + 0x250
+PROPOSAL_MAGIC = 0x70726F71  # "proq"
+PROPOSAL_VERSION = 0x00000100
 
+REG_PROPOSAL_MAGIC          = RBB_PROPOSAL_QUEUE + 0x000
+REG_PROPOSAL_VERSION        = RBB_PROPOSAL_QUEUE + 0x004
+REG_PROPOSAL_FEATURES       = RBB_PROPOSAL_QUEUE + 0x008
+REG_PROPOSAL_SLOT_BYTES     = RBB_PROPOSAL_QUEUE + 0x00C
 
-# -----------------------------------------------------------------------------
-# Proposal DMA queue
-# -----------------------------------------------------------------------------
+REG_PROPOSAL_CONTROL         = RBB_PROPOSAL_QUEUE + 0x010
+REG_PROPOSAL_STATUS          = RBB_PROPOSAL_QUEUE + 0x014
+REG_PROPOSAL_ENTRY_COUNTER_LO     = RBB_PROPOSAL_QUEUE + 0x018
+REG_PROPOSAL_ENTRY_COUNTER_HI     = RBB_PROPOSAL_QUEUE + 0x01C
 
-PROP_DMA_MAGIC = 0x70726F71  # "proq"
-PROP_DMA_VERSION = 0x00000100
-PROP_DMA_FEATURES = 0x00000001
+REG_PROPOSAL_DMA_ADDR_LO        = RBB_PROPOSAL_QUEUE + 0x100
+REG_PROPOSAL_DMA_ADDR_HI        = RBB_PROPOSAL_QUEUE + 0x104
+REG_PROPOSAL_DMA_LEN            = RBB_PROPOSAL_QUEUE + 0x108
+REG_PROPOSAL_DMA_STRIDE_LO      = RBB_PROPOSAL_QUEUE + 0x10C
+REG_PROPOSAL_DMA_STRIDE_HI      = RBB_PROPOSAL_QUEUE + 0x110
+REG_PROPOSAL_DMA_COUNT          = RBB_PROPOSAL_QUEUE + 0x114
+REG_PROPOSAL_DMA_CONTROL        = RBB_PROPOSAL_QUEUE + 0x118
+REG_PROPOSAL_DMA_STATUS         = RBB_PROPOSAL_QUEUE + 0x11C
+REG_PROPOSAL_DMA_ACTIVE_INDEX   = RBB_PROPOSAL_QUEUE + 0x120
+REG_PROPOSAL_DMA_STATE          = RBB_PROPOSAL_QUEUE + 0x124
+REG_PROPOSAL_DMA_STATUS_TAG     = RBB_PROPOSAL_QUEUE + 0x128
+REG_PROPOSAL_DMA_STATUS_ERROR   = RBB_PROPOSAL_QUEUE + 0x12C
+REG_PROPOSAL_DMA_STATUS_VALID   = RBB_PROPOSAL_QUEUE + 0x130
 
-PROP_DMA_REG_MAGIC = RBB_PROPOSAL_QUEUE + 0x000
-PROP_DMA_REG_VERSION = RBB_PROPOSAL_QUEUE + 0x004
-PROP_DMA_REG_FEATURES = RBB_PROPOSAL_QUEUE + 0x008
-PROP_DMA_REG_GLOBAL_CONTROL = RBB_PROPOSAL_QUEUE + 0x00C
-PROP_DMA_REG_GLOBAL_STATUS = RBB_PROPOSAL_QUEUE + 0x010
-PROP_DMA_REG_SCRATCH = RBB_PROPOSAL_QUEUE + 0x014
-PROP_DMA_REG_ENTRY_COUNTER = RBB_PROPOSAL_QUEUE + 0x018
+# ----------------------------------------------------------
+#                   Commit DMA writer     
+# ----------------------------------------------------------
+COMMIT_MAGIC    = 0x636F6D71  # "comq"
+COMMIT_VERSION  = 0x00000100
+COMMIT_FEATURES = 0x00000001
 
-PROP_DMA_REG_BATCH_ADDR_LO = RBB_PROPOSAL_QUEUE + 0x100
-PROP_DMA_REG_BATCH_ADDR_HI = RBB_PROPOSAL_QUEUE + 0x104
-PROP_DMA_REG_BATCH_SLOT_LEN = RBB_PROPOSAL_QUEUE + 0x108
-PROP_DMA_REG_BATCH_STRIDE_LO = RBB_PROPOSAL_QUEUE + 0x10C
-PROP_DMA_REG_BATCH_STRIDE_HI = RBB_PROPOSAL_QUEUE + 0x110
-PROP_DMA_REG_BATCH_COUNT = RBB_PROPOSAL_QUEUE + 0x114
-PROP_DMA_REG_BATCH_CONTROL = RBB_PROPOSAL_QUEUE + 0x118
-PROP_DMA_REG_BATCH_STATUS = RBB_PROPOSAL_QUEUE + 0x11C
-PROP_DMA_REG_BATCH_ACTIVE_INDEX = RBB_PROPOSAL_QUEUE + 0x120
-PROP_DMA_REG_BATCH_STATE = RBB_PROPOSAL_QUEUE + 0x124
-PROP_DMA_REG_STATUS_TAG = RBB_PROPOSAL_QUEUE + 0x128
-PROP_DMA_REG_STATUS_ERROR = RBB_PROPOSAL_QUEUE + 0x12C
-PROP_DMA_REG_STATUS_VALID = RBB_PROPOSAL_QUEUE + 0x130
+REG_COMMIT_MAGIC            = RBB_COMMIT_QUEUE + 0x000
+REG_COMMIT_VERSION          = RBB_COMMIT_QUEUE + 0x004
+REG_COMMIT_FEATURES         = RBB_COMMIT_QUEUE + 0x008
+REG_COMMIT_CONTROL          = RBB_COMMIT_QUEUE + 0x00C
+REG_COMMIT_STATUS           = RBB_COMMIT_QUEUE + 0x010
+REG_COMMIT_STRIDE_LO        = RBB_COMMIT_QUEUE + 0x014
+REG_COMMIT_STRIDE_HI        = RBB_COMMIT_QUEUE + 0x018
+REG_COMMIT_ACTIVE_BUFFER    = RBB_COMMIT_QUEUE + 0x01C
+REG_COMMIT_BUF_SLOT_LEN     = RBB_COMMIT_QUEUE + 0x020
 
-# -----------------------------------------------------------------------------
-# Commit DMA writer (matches the current commit_dma_writer RTL)
-# -----------------------------------------------------------------------------
+# buffer 0
+REG_COMMIT_DMA_BUF0_ADDR_LO         = RBB_COMMIT_QUEUE + 0x100
+REG_COMMIT_DMA_BUF0_ADDR_HI         = RBB_COMMIT_QUEUE + 0x104
+REG_COMMIT_DMA_BUF0_SLOT_CAPACITY   = RBB_COMMIT_QUEUE + 0x108
+REG_COMMIT_DMA_BUF0_CONTROL         = RBB_COMMIT_QUEUE + 0x10C
+REG_COMMIT_DMA_BUF0_STATUS          = RBB_COMMIT_QUEUE + 0x110
+REG_COMMIT_DMA_BUF0_COMPLETED_COUNT = RBB_COMMIT_QUEUE + 0x114
+REG_COMMIT_DMA_BUF0_ERROR_COUNT     = RBB_COMMIT_QUEUE + 0x118
 
-COMMIT_DMA_REG_STRIDE_LO = RBB_COMMIT_QUEUE + 0x000
-COMMIT_DMA_REG_STRIDE_HI = RBB_COMMIT_QUEUE + 0x004
-COMMIT_DMA_REG_CONTROL = RBB_COMMIT_QUEUE + 0x008
-COMMIT_DMA_REG_STATUS = RBB_COMMIT_QUEUE + 0x00C
-COMMIT_DMA_REG_ACTIVE_BUFFER = RBB_COMMIT_QUEUE + 0x010
+# buffer 1
+REG_COMMIT_DMA_BUF1_ADDR_LO         = RBB_COMMIT_QUEUE + 0x200
+REG_COMMIT_DMA_BUF1_ADDR_HI         = RBB_COMMIT_QUEUE + 0x204
+REG_COMMIT_DMA_BUF1_SLOT_CAPACITY   = RBB_COMMIT_QUEUE + 0x208
+REG_COMMIT_DMA_BUF1_CONTROL         = RBB_COMMIT_QUEUE + 0x20C
+REG_COMMIT_DMA_BUF1_STATUS          = RBB_COMMIT_QUEUE + 0x210
+REG_COMMIT_DMA_BUF1_COMPLETED_COUNT = RBB_COMMIT_QUEUE + 0x214
+REG_COMMIT_DMA_BUF1_ERROR_COUNT     = RBB_COMMIT_QUEUE + 0x218
 
-COMMIT_DMA_REG_BUF0_ADDR_LO = RBB_COMMIT_QUEUE + 0x100
-COMMIT_DMA_REG_BUF0_ADDR_HI = RBB_COMMIT_QUEUE + 0x104
-COMMIT_DMA_REG_BUF0_SLOT_CAPACITY = RBB_COMMIT_QUEUE + 0x108
-COMMIT_DMA_REG_BUF0_CONTROL = RBB_COMMIT_QUEUE + 0x12C
-COMMIT_DMA_REG_BUF0_STATUS = RBB_COMMIT_QUEUE + 0x130
-COMMIT_DMA_REG_BUF0_COMPLETED_COUNT = RBB_COMMIT_QUEUE + 0x134
-COMMIT_DMA_REG_BUF0_ERROR_COUNT = RBB_COMMIT_QUEUE + 0x138
+# ----------------------------------------------------------
+#                  Consensus core
+# ----------------------------------------------------------
+REG_CONSENSUS_HALT              = RBB_CONSENSUS_CORE + 0x000
+REG_CONSENSUS_GLOBAL_ENABLE     = RBB_CONSENSUS_CORE + 0x004
+REG_CONSENSUS_RUN_ID            = RBB_CONSENSUS_CORE + 0x008
+REG_CONSENSUS_MEMBERSHIP        = RBB_CONSENSUS_CORE + 0x00C
+REG_CONSENSUS_ACTIVATE          = RBB_CONSENSUS_CORE + 0x010
+REG_CONSENSUS_REBOOT            = RBB_CONSENSUS_CORE + 0x014
 
-COMMIT_DMA_REG_BUF1_ADDR_LO = RBB_COMMIT_QUEUE + 0x200
-COMMIT_DMA_REG_BUF1_ADDR_HI = RBB_COMMIT_QUEUE + 0x204
-COMMIT_DMA_REG_BUF1_SLOT_CAPACITY = RBB_COMMIT_QUEUE + 0x208
-COMMIT_DMA_REG_BUF1_CONTROL = RBB_COMMIT_QUEUE + 0x22C
-COMMIT_DMA_REG_BUF1_STATUS = RBB_COMMIT_QUEUE + 0x230
-COMMIT_DMA_REG_BUF1_COMPLETED_COUNT = RBB_COMMIT_QUEUE + 0x234
-COMMIT_DMA_REG_BUF1_ERROR_COUNT = RBB_COMMIT_QUEUE + 0x238
-
-
-# -----------------------------------------------------------------------------
-# Bit definitions
-# -----------------------------------------------------------------------------
-
-class CommonStatus(IntFlag):
-    CONFIG_VALID = 1 << 0
-    CONTROL_BIT_0 = 1 << 1
-    CONTROL_BIT_1 = 1 << 2
-
-
-class ProposalControl(IntFlag):
-    START = 1 << 0
-    CLEAR_DONE = 1 << 1
-    CLEAR_ERROR = 1 << 2
-
-
-class ProposalStatus(IntFlag):
-    RUNNING = 1 << 0
-    DONE = 1 << 1
-    ERROR = 1 << 2
-
-
-class CommitGlobalControl(IntFlag):
-    START = 1 << 0
-    STOP = 1 << 1
-
-
-class CommitGlobalStatus(IntFlag):
-    BUSY = 1 << 0
-    WAITING_SLOT = 1 << 1
-    WAITING_ARMED_BUFFER = 1 << 2
-
-
-class CommitBufferControl(IntFlag):
-    ARM = 1 << 0
-    CLEAR_STATUS = 1 << 1
-
-
-class CommitBufferStatus(IntFlag):
-    ARMED = 1 << 0
-    DONE = 1 << 1
-    ERROR = 1 << 2
-
-
-class ProposalSinkControl(IntFlag):
-    ENABLE = 1 << 0
-    CLEAR = 1 << 1
-
-
-class CommitGeneratorControl(IntFlag):
-    START = 1 << 0
-    STOP = 1 << 1
-    CLEAR = 1 << 2
-
-
-class CommitGeneratorStatus(IntFlag):
-    BUSY = 1 << 0
-    DONE = 1 << 1
-
-
-# -----------------------------------------------------------------------------
-# Exceptions and generic helpers
-# -----------------------------------------------------------------------------
-
-class SSRDriverError(RuntimeError):
-    """Base exception for the SSR dataplane driver model."""
-
-
-class SSRDriverProbeError(SSRDriverError):
-    """Raised when the SSR application cannot be discovered or validated."""
-
-
-class SSRDriverTimeoutError(SSRDriverError):
-    """Raised when hardware does not reach a requested state in time."""
-
-
-class SSRDeviceBusyError(SSRDriverError):
-    """Raised when software attempts an operation on a busy resource."""
-
-
-class SSRHardwareError(SSRDriverError):
-    """Raised when the dataplane reports a hardware or DMA error."""
-
-
-def _validate_u64(value: int, name: str) -> None:
-    if not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer")
-    if value < 0 or value > 0xFFFFFFFFFFFFFFFF:
-        raise ValueError(f"{name} must fit in 64 bits")
-
+# ----------------------------------------------------------
+#           Helper functions
+# ----------------------------------------------------------
 
 def _validate_u32(value: int, name: str) -> None:
-    if not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer")
-    if value < 0 or value > 0xFFFFFFFF:
-        raise ValueError(f"{name} must fit in 32 bits")
+    if not (0 <= value <= 0xFFFFFFFF):
+        raise ValueError(f"{name} must be a 32-bit unsigned integer, got {value}")
 
-async def poll_register(
-    rb: Any,
-    address: int,
-    predicate: Callable[[int], bool],
-    *,
-    timeout_polls: int = 2000,
-    description: str = "register condition",
-) -> int:
-    """Poll one 32-bit CSR until predicate(value) returns True."""
-    if timeout_polls <= 0:
-        raise ValueError("timeout_polls must be positive")
+def _validate_u64(value: int, name: str) -> None:
+    if not (0 <= value <= 0xFFFFFFFFFFFFFFFF):
+        raise ValueError(f"{name} must be a 64-bit unsigned integer, got {value}")
 
-    last_value = 0
+async def poll_register(read_func: Callable[[], Any], condition_func: Callable[[Any], bool], *, timeout_polls: int = 10000, what: str = "register") -> Any:
+    for poll_count in range(timeout_polls):
+        value = await read_func()
+        if condition_func(value):
+            return value
+        await Timer(100, units="ns")  # wait before next poll
+    raise SSRTimeoutError(f"Timeout while polling {what} after {timeout_polls} polls")
 
-    for _ in range(timeout_polls):
-        last_value = int(await rb.read_dword(address)) & 0xFFFFFFFF
+# ----------------------------------------------------------
+#                   Bit definitions
+# ----------------------------------------------------------
+class CommonStatus(IntFlag):
+    """COMMON_REG_STATUS (0x014)"""
+    CONFIG_VALID = 1 << 0
+    CONTROL_BIT0 = 1 << 1
+    CONTROL_BIT1 = 1 << 2
 
-        if predicate(last_value):
-            return last_value
+class ProposalControl(IntFlag):
+    START       = 1 << 0
+    CLEAR_DONE  = 1 << 1
+    CLEAR_ERROR = 1 << 2
 
-    raise SSRDriverTimeoutError(
-        f"Timeout waiting for {description}; "
-        f"address=0x{address:08x}, last_value=0x{last_value:08x}"
-    )
+class ProposalStatus(IntFlag):
+    RUNNING     = 1 << 0
+    DONE        = 1 << 1
+    ERROR       = 1 << 2
+
+class CommitControl(IntFlag):
+    START       = 1 << 0
+    STOP        = 1 << 1
+
+class CommitBufferControl(IntFlag):
+    ARM        = 1 << 0
+    CLEAR      = 1 << 1
+
+class CommitBufferStatus(IntFlag):
+    ARMED      = 1 << 0
+    DONE       = 1 << 1
+    ERROR      = 1 << 2
+
+# ----------------------------------------------------------
+#                   Data structures
+# ----------------------------------------------------------
+class SSRDeviceState(IntEnum):
+    UNINITIALIZED = 0
+    PROBED  = 1
+    OPENED  = 2
+    RUNNING = 3
+
+@dataclass(frozen=True)
+class SSRConfig():
+    replica_id: int
+    replica_num: int
+    round_length_ns: int
+
+@dataclass(frozen=True)
+class CommitRecord:
+    buffer_index: int
+    slot_index: int
+    data: bytes
+    sim_time_ns: float = 0.0
+
+# ----------------------------------------------------------
+#           Error
+# ----------------------------------------------------------
+class SSRError(Exception):
+    """SSR auxiliary driver error"""
+
+class SSRStateError(SSRError):
+    """SSR auxiliary driver state error"""
+
+class SSRProbeError(SSRError):
+    """SSR auxiliary driver probe error"""
+
+class SSRTimeoutError(SSRError):
+    """SSR auxiliary driver timeout error"""
+
+class SSRHardwareError(SSRError):
+    """SSR auxiliary driver hardware error"""
+
+# ----------------------------------------------------------
+#       Utility functions
+# ----------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# Proposal queue
+#                   Proposal queue
 # -----------------------------------------------------------------------------
+class ProposalHardwareState(IntEnum):
+    IDLE        = 0
+    ISSUE_DMA   = 1
+    WAIT_DMA    = 2
+    COMMIT_SLOT = 3
+    DONE        = 4
+
+@dataclass(frozen=True)
+class ProposalBatch:
+    region: Any
+    count: int
+    stride: int
+    offset: int
+
+@dataclass(frozen=True)
+class ProposalQueueStatus:
+    running: bool
+    done: bool
+    error: bool
+
+@dataclass(frozen=True)
+class ProposalBatchResult:
+    requested_count: int
+    completed_count: int
+
+    entry_counter_before: int
+    entry_counter_after: int
+
+    last_dma_status_valid: bool
 
 class ProposalQueue:
-    """Driver-side control of the host-to-FPGA proposal DMA queue."""
+    def __init__(self, device: "SSRDevice") -> None:
+        self.device = device
+        self.log = SimLog("cocotb.ssr_dataplane.proposal_queue")
 
-    def __init__(self, driver: "Driver") -> None:
-        self.driver = driver
-        self.rb = driver.rb
+        self.rb = device._rb
+        self._opened = False
 
-    async def validate_identity(self) -> None:
-        magic = int(await self.rb.read_dword(PROP_DMA_REG_MAGIC))
-        version = int(await self.rb.read_dword(PROP_DMA_REG_VERSION))
-        features = int(await self.rb.read_dword(PROP_DMA_REG_FEATURES))
+        self._slot_len: int
+        self._region: Any
+        self._region_slots = 0
 
-        if magic != PROP_DMA_MAGIC:
-            raise SSRDriverProbeError(
-                f"Unexpected proposal queue magic: expected "
-                f"0x{PROP_DMA_MAGIC:08x}, got 0x{magic:08x}"
-            )
-        if version != PROP_DMA_VERSION:
-            raise SSRDriverProbeError(
-                f"Unexpected proposal queue version: expected "
-                f"0x{PROP_DMA_VERSION:08x}, got 0x{version:08x}"
-            )
-        if features & PROP_DMA_FEATURES != PROP_DMA_FEATURES:
-            raise SSRDriverProbeError(
-                f"Proposal queue lacks required features: required "
-                f"0x{PROP_DMA_FEATURES:08x}, got 0x{features:08x}"
-            )
+    def _require_open(self) -> None:
+        if not self._opened:
+            raise SSRStateError("ProposalQueue is not opened")
 
-    async def read_status(self) -> ProposalStatus:
-        value = await self.rb.read_dword(PROP_DMA_REG_BATCH_STATUS)
-        return ProposalStatus(int(value))
 
-    async def read_active_index(self) -> int:
-        return int(await self.rb.read_dword(PROP_DMA_REG_BATCH_ACTIVE_INDEX))
+    @property
+    def slot_len(self) -> int:
+        self._require_open()
+        assert self._slot_len is not None
+        return self._slot_len
 
-    async def read_entry_counter(self) -> int:
-        return int(await self.rb.read_dword(PROP_DMA_REG_ENTRY_COUNTER))
+    @property
+    def capacity_slots(self) -> int:
+        self._require_open()
+        assert self._region is not None
+        return self._region_slots
 
     async def read_slot_length(self) -> int:
-        return int(await self.rb.read_dword(PROP_DMA_REG_BATCH_SLOT_LEN))
+        return int(await self.rb.read_dword(REG_PROPOSAL_SLOT_BYTES))
+    
+    async def read_status(self) -> ProposalStatus:
+        return ProposalStatus(int(await self.rb.read_dword(REG_PROPOSAL_STATUS)) & 0x7)
 
-    async def read_state(self) -> int:
-        return int(await self.rb.read_dword(PROP_DMA_REG_BATCH_STATE))
+    async def read_hw_state(self) -> ProposalHardwareState:
+        raw = int(await self.rb.read_dword(REG_PROPOSAL_DMA_STATE)) & 0x7
+        try:
+            return ProposalHardwareState(raw)
+        except ValueError:
+            raise RuntimeError(f"Invalid ProposalHardwareState value: {raw}")
+    
+    async def read_active_index(self) -> int:
+        return int(await self.rb.read_dword(REG_PROPOSAL_DMA_ACTIVE_INDEX))
 
-    async def clear_status(self) -> None:
-        await self.rb.write_dword(
-            PROP_DMA_REG_BATCH_CONTROL,
-            int(ProposalControl.CLEAR_DONE | ProposalControl.CLEAR_ERROR),
-        )
+    async def read_entry_counter(self) -> int:
+        lo = int(await self.rb.read_dword(REG_PROPOSAL_ENTRY_COUNTER_LO))
+        hi = int(await self.rb.read_dword(REG_PROPOSAL_ENTRY_COUNTER_HI))
+        return (hi << 32) | lo
 
-    async def submit(self, dma_addr: int, count: int, stride: int) -> None:
-        """Configure and start one proposal DMA batch.
+    async def read_dma_status(self) -> tuple[int, int, bool]:
+        tag = int(await self.rb.read_dword(REG_PROPOSAL_DMA_STATUS_TAG))
+        error = int(await self.rb.read_dword(REG_PROPOSAL_DMA_STATUS_ERROR))
+        valid = bool(int(await self.rb.read_dword(REG_PROPOSAL_DMA_STATUS_VALID)))
+        return tag, error, valid
 
-        FPGA-internal proposal-buffer fullness is handled by RTL backpressure
-        through tail_slot_valid.  The host only protects the active batch
-        configuration from being overwritten while RUNNING is asserted.
-        """
+    async def _diagnose(self) -> str:
+        state = await self.read_hw_state()
+        status = await self.read_status()
+        idx = await self.read_active_index()
+        tag, error, valid = await self.read_dma_status()
+
+        hint = ""
+        if state is ProposalHardwareState.ISSUE_DMA:
+            hint = " (Stop on ISSUE_DMA: proposal_buffer may be full, check commit queue)"
+        elif state is ProposalHardwareState.WAIT_DMA:
+            hint = " (Stop on WAIT_DMA: DMA engine may be stalled, check commit queue)"
+        elif state is ProposalHardwareState.COMMIT_SLOT:
+            hint = " (Stop on COMMIT_SLOT: proposal_buffer may be full, check commit queue)"
+
+        return (f"ProposalQueue status: state={state.name}, status={status}, "
+                f"active_index={idx}, dma_tag={tag}, dma_error={error}, dma_valid={valid}{hint}")
+
+    async def open(self, *, capacity_slots: int = 8) -> None:
+        self.log.info("Opening ProposalQueue")
+        if self._opened:
+            raise RuntimeError("ProposalQueue is already opened")
+
+        if capacity_slots <= 0:
+            raise ValueError("ProposalQueue capacity must be positive")
+
+        # validate identity and capabilities
+        magic = int(await self.rb.read_dword(REG_PROPOSAL_MAGIC))
+        version = int(await self.rb.read_dword(REG_PROPOSAL_VERSION))
+        if magic != PROPOSAL_MAGIC or version != PROPOSAL_VERSION:
+            raise RuntimeError("ProposalQueue identity mismatch: "
+                               f"expected magic=0x{PROPOSAL_MAGIC:08x}, version=0x{PROPOSAL_VERSION:08x}, "
+                               f"got magic=0x{magic:08x}, version=0x{version:08x}")
+
+        self._slot_len = await self.read_slot_length()
+        if self._slot_len <= 0:
+            raise RuntimeError(f"ProposalQueue slot length is invalid: {self._slot_len}")
+        
+        self._region_slots = capacity_slots
+        self._region = self.device.alloc_dma_region(self._slot_len * self._region_slots, fill=0x00)
+
+        await self.clear_flags()
+
+        self._opened = True
+        self.log.info("ProposalQueue opened: slot_len=%d, capacity_slots=%d", self._slot_len, self._region_slots)
+    
+    async def close(self) -> None:
+        self._require_open()
+        self._opened = False
+        self._region = None
+        self._region_slots = 0
+    
+    def _on_parent_reset(self) -> None:
+        self._opened = False
+        self._region = None
+        self._region_slots = 0
+
+    async def clear_flags(self) -> None:
+        await self.rb.write_dword(REG_PROPOSAL_DMA_CONTROL, int(ProposalControl.CLEAR_DONE | ProposalControl.CLEAR_ERROR))
+
+    async def submit(self, *, dma_addr: int, count: int, stride: int) -> None:
+        """Start a DMA transfer of proposals to the hardware."""
+        self._require_open()
         _validate_u64(dma_addr, "dma_addr")
-        _validate_u64(stride, "stride")
         _validate_u32(count, "count")
+        _validate_u64(stride, "stride")
 
-        assert count != 0 and stride != 0, "count and stride must be positive"
+        if count == 0:
+            raise ValueError("ProposalQueue submit count must be positive")
+
+        if stride != self._slot_len:
+            raise ValueError(f"ProposalQueue submit stride ({stride}) does not match slot length ({self._slot_len})")
 
         status = await self.read_status()
         if status & ProposalStatus.RUNNING:
-            raise SSRDeviceBusyError("Proposal DMA engine is already running")
+            raise SSRStateError("ProposalQueue is already running a DMA transfer")
 
-        await self.clear_status()
-        await self.rb.write_dword(PROP_DMA_REG_BATCH_ADDR_LO, dma_addr & 0xFFFFFFFF)
-        await self.rb.write_dword(PROP_DMA_REG_BATCH_ADDR_HI, (dma_addr >> 32) & 0xFFFFFFFF)
-        await self.rb.write_dword(PROP_DMA_REG_BATCH_STRIDE_LO, stride & 0xFFFFFFFF)
-        await self.rb.write_dword(PROP_DMA_REG_BATCH_STRIDE_HI, (stride >> 32) & 0xFFFFFFFF)
-        await self.rb.write_dword(PROP_DMA_REG_BATCH_COUNT, count)
-        await self.rb.write_dword(PROP_DMA_REG_BATCH_CONTROL, int(ProposalControl.START))
+        await self.rb.write_dword(REG_PROPOSAL_DMA_ADDR_LO, dma_addr & 0xFFFFFFFF)
+        await self.rb.write_dword(REG_PROPOSAL_DMA_ADDR_HI, (dma_addr >> 32) & 0xFFFFFFFF)
+        await self.rb.write_dword(REG_PROPOSAL_DMA_STRIDE_LO, stride & 0xFFFFFFFF)
+        await self.rb.write_dword(REG_PROPOSAL_DMA_STRIDE_HI, (stride >> 32) & 0xFFFFFFFF)
+        await self.rb.write_dword(REG_PROPOSAL_DMA_COUNT, count)
+        await self.rb.write_dword(REG_PROPOSAL_DMA_CONTROL, int(ProposalControl.START))
 
-    async def wait_done(self, *, timeout_polls: int = 2000) -> ProposalStatus:
-        value = await poll_register(
-            self.rb,
-            PROP_DMA_REG_BATCH_STATUS,
-            lambda status: bool(
-                status & int(ProposalStatus.DONE | ProposalStatus.ERROR)
-            ),
-            timeout_polls=timeout_polls,
-            description="proposal DMA batch completion",
-        )
+    async def wait_done(self, *, timeout_polls: int = 10000, interval_ns: int = 100) -> ProposalStatus:
+        """Wait for the DMA transfer to complete, with a timeout."""
+        self._require_open()
 
-        status = ProposalStatus(value)
+        try:
+            raw = await poll_register(lambda: self.rb.read_dword(REG_PROPOSAL_STATUS),
+                                      lambda x: x & ProposalStatus.DONE,
+                                      timeout_polls=timeout_polls,
+                                      what="proposal DMA completion")
+        except SSRTimeoutError as exc:
+            raise SSRTimeoutError(f"ProposalQueue DMA transfer did not complete within {timeout_polls} polls") from exc
+
+        status = ProposalStatus(raw & 0x7)
         if status & ProposalStatus.ERROR:
-            dma_error = int(
-                await self.rb.read_dword(PROP_DMA_REG_STATUS_ERROR)
-            )
-            dma_tag = int(await self.rb.read_dword(PROP_DMA_REG_STATUS_TAG))
-            raise SSRHardwareError(
-                f"Proposal DMA failed: status=0x{value:08x}, "
-                f"dma_error=0x{dma_error:08x}, dma_tag=0x{dma_tag:08x}"
-            )
+            raise SSRHardwareError(f"ProposalQueue DMA transfer completed with error: status={status}")
 
         return status
 
-    async def wait_idle(self, *, timeout_polls: int = 2000) -> ProposalStatus:
-        value = await poll_register(
-            self.rb,
-            PROP_DMA_REG_BATCH_STATUS,
-            lambda status: not bool(status & int(ProposalStatus.RUNNING)),
-            timeout_polls=timeout_polls,
-            description="proposal DMA engine idle",
+    # High-level API for submitting proposals
+    async def propose(self, records: list[bytes], *,
+                      wait: bool = True,
+                      timeout_polls: int = 10000) -> ProposalBatchResult | None:
+        self._require_open()
+        if not records:
+            raise ValueError("No records provided for proposal")
+
+        if len(records) > self._region_slots:
+            raise ValueError(f"Number of records ({len(records)}) exceeds ProposalQueue capacity ({self._region_slots})")
+
+        for i, rec in enumerate(records):
+            if len(rec) != self._slot_len:
+                raise ValueError(f"Record {i} length ({len(rec)}) does not match ProposalQueue slot length ({self._slot_len})")
+
+            off = i * int(self._slot_len)
+            self._region[off:off + self._slot_len] = rec
+        
+        entry_before = await self.read_entry_counter()
+
+        await self.submit(dma_addr=self._region.get_absolute_address(0), count=len(records)//self._slot_len, stride=self._slot_len)
+
+        if not wait:
+            return None
+
+        await self.wait_done(timeout_polls=timeout_polls)
+
+        entry_after = await self.read_entry_counter()
+        active_index = await self.read_active_index()
+        _, _, dma_valid = await self.read_dma_status()
+
+        delivered = entry_after - entry_before
+        if delivered != len(records):
+            raise SSRHardwareError(f"ProposalQueue delivered {delivered} records, expected {len(records)}")
+
+        return ProposalBatchResult(
+            requested_count=len(records),
+            completed_count=delivered,
+            entry_counter_before=entry_before,
+            entry_counter_after=entry_after,
+            last_dma_status_valid=dma_valid
         )
-        return ProposalStatus(value)
-
 
 # -----------------------------------------------------------------------------
-# Commit queue and double buffers
+#                   Commit Queue
 # -----------------------------------------------------------------------------
+class CommitBufferState(Enum):
+    UNCONFIGURED = auto()
+    SOFTWARE_OWNED = auto()
+    HARDWARE_OWNED = auto()
+    COMPLETED = auto()
+    ERROR = auto()
 
 class CommitBuffer:
-    """One host-owned buffer in the strict commit ping-pong pair."""
+    """
+    One of the ping-pong buffers used by the CommitQueue to receive committed proposals from the hardware.
 
-    def __init__(
-        self,
-        queue: "CommitQueue",
-        index: int,
-        *,
-        addr_lo_reg: int,
-        addr_hi_reg: int,
-        capacity_reg: int,
-        control_reg: int,
-        status_reg: int,
-        completed_reg: int,
-        error_reg: int,
-    ) -> None:
-        self.queue = queue
-        self.driver = queue.driver
-        self.rb = queue.rb
+    Hardware semantics:
+        - armed: the buffer is owned by the hardware and can be written to
+        - completed_count >= slot_capacity: the buffer has been filled by the hardware and is ready to be read by software
+        - clear command: the buffer is cleared and returned to software ownership
+    """
+    _REGS = {
+        0: dict(addr_lo=REG_COMMIT_DMA_BUF0_ADDR_LO, 
+                addr_hi=REG_COMMIT_DMA_BUF0_ADDR_HI,
+                capacity=REG_COMMIT_DMA_BUF0_SLOT_CAPACITY,
+                control=REG_COMMIT_DMA_BUF0_CONTROL,
+                status=REG_COMMIT_DMA_BUF0_STATUS,
+                completed=REG_COMMIT_DMA_BUF0_COMPLETED_COUNT,
+                error=REG_COMMIT_DMA_BUF0_ERROR_COUNT),
+        1: dict(addr_lo=REG_COMMIT_DMA_BUF1_ADDR_LO, addr_hi=REG_COMMIT_DMA_BUF1_ADDR_HI,
+                capacity=REG_COMMIT_DMA_BUF1_SLOT_CAPACITY,
+                control=REG_COMMIT_DMA_BUF1_CONTROL,
+                status=REG_COMMIT_DMA_BUF1_STATUS,
+                completed=REG_COMMIT_DMA_BUF1_COMPLETED_COUNT,
+                error=REG_COMMIT_DMA_BUF1_ERROR_COUNT),
+    }
 
+    def __init__(self, parent: "CommitQueue", *, index: int) -> None:
+        if index not in self._REGS:
+            raise ValueError(f"Invalid CommitBuffer index: {index}")
+
+        self.parent = parent
         self.index = index
-        self.addr_lo_reg = addr_lo_reg
-        self.addr_hi_reg = addr_hi_reg
-        self.capacity_reg = capacity_reg
-        self.control_reg = control_reg
-        self.status_reg = status_reg
-        self.completed_reg = completed_reg
-        self.error_reg = error_reg
+        self.reg = self._REGS[index]
+        self.log = SimLog(f"cocotb.ssr_dataplane.commit_queue.buffer{index}")
 
-        self.dma_addr: int | None = None
-        self.slot_capacity = 0
-        self.region: Any | None = None
+        self._region: Any | None = None
+        self._capacity: int | None = None
+        self._stride: int | None = None
+    
+    async def configure(self, region: Any, *, capacity: int, stride: int) -> None:
+        addr = region.get_absolute_address(0)
 
-    async def read_status(self) -> CommitBufferStatus:
-        value = await self.rb.read_dword(self.status_reg)
-        return CommitBufferStatus(int(value))
+        await self.parent.rb.write_dword(self.reg["addr_lo"], addr & 0xFFFFFFFF)
+        await self.parent.rb.write_dword(self.reg["addr_hi"], (addr >> 32) & 0xFFFFFFFF)
+        await self.parent.rb.write_dword(self.reg["capacity"], capacity)
+        await self.parent.rb.write_dword(self.reg["stride_lo"], stride & 0xFFFFFFFF)
+        await self.parent.rb.write_dword(self.reg["stride_hi"], (stride >> 32) & 0xFFFFFFFF)
 
-    async def completed_count(self) -> int:
-        return int(await self.rb.read_dword(self.completed_reg))
+        self._region = region
+        self._capacity = capacity
+        self._stride = stride
+        self.log.info("CommitBuffer %d configured: region=%s, capacity=%d, stride=%d", self.index, region, capacity, stride)
 
-    async def error_count(self) -> int:
-        return int(await self.rb.read_dword(self.error_reg))
+    async def read_raw_status(self) -> CommitBufferStatus:
+        raw = int(await self.parent.rb.read_dword(self.reg["status"])) & 0x7
+        return CommitBufferStatus(raw)
 
-    async def configure(self, dma_addr: int, slot_capacity: int, *, region: Any | None = None) -> None:
-        _validate_u64(dma_addr, "dma_addr")
-        _validate_u32(slot_capacity, "slot_capacity")
-        if slot_capacity == 0:
-            raise ValueError("slot_capacity must be positive")
+    async def read_status(self) -> CommitBufferState:
+        if self._region is None:
+            return CommitBufferState.UNCONFIGURED
 
-        await self.queue.assert_buffer_configurable(self.index)
-        status = await self.read_status()
+        raw = await self.read_raw_status()
+        if raw & CommitBufferStatus.DONE:
+            return CommitBufferState.COMPLETED
+        if raw & CommitBufferStatus.ERROR:
+            return CommitBufferState.ERROR
+        if raw & CommitBufferStatus.ARMED:
+            return CommitBufferState.HARDWARE_OWNED
+        
+        return CommitBufferState.SOFTWARE_OWNED
 
-        if status & CommitBufferStatus.ARMED:
-            raise SSRDeviceBusyError(f"Commit buffer {self.index} is armed")
-        if status & (CommitBufferStatus.DONE | CommitBufferStatus.ERROR):
-            raise SSRDeviceBusyError(f"Commit buffer {self.index} has uncleared completion status")
+    async def read_completed_count(self) -> int:
+        return int(await self.parent.rb.read_dword(self.reg["completed"]))
 
-        await self.rb.write_dword(self.addr_lo_reg, dma_addr & 0xFFFFFFFF)
-        await self.rb.write_dword(self.addr_hi_reg, (dma_addr >> 32) & 0xFFFFFFFF)
-        await self.rb.write_dword(self.capacity_reg, slot_capacity)
-
-        self.dma_addr = dma_addr
-        self.slot_capacity = slot_capacity
-        self.region = region
+    async def read_error_count(self) -> int:
+        return int(await self.parent.rb.read_dword(self.reg["error"]))
 
     async def arm(self) -> None:
-        await self.queue.assert_buffer_configurable(self.index)
-        status = await self.read_status()
+        await self.parent.rb.write_dword(self.reg["control"], int(CommitBufferControl.ARM))
 
-        if status & CommitBufferStatus.ARMED:
-            raise SSRDeviceBusyError(f"Commit buffer {self.index} is already armed")
-
-        if status & (CommitBufferStatus.DONE | CommitBufferStatus.ERROR):
-            raise SSRDeviceBusyError(f"Commit buffer {self.index} has uncleared status")
-
-        await self.rb.write_dword(self.control_reg, int(CommitBufferControl.ARM))
-
-    async def clear_status(self) -> None:
-        await self.queue.assert_buffer_configurable(self.index)
-        status = await self.read_status()
-
-        if status & CommitBufferStatus.ARMED:
-            raise SSRDeviceBusyError(f"Commit buffer {self.index} is armed; status cannot be cleared safely")
-
-        await self.rb.write_dword(self.control_reg, int(CommitBufferControl.CLEAR_STATUS))
-
-    async def wait_done(self, *, timeout_polls: int = 2000) -> int:
-        value = await poll_register(
-            self.rb,
-            self.status_reg,
-            lambda status: bool(
-                status
-                & int(CommitBufferStatus.DONE | CommitBufferStatus.ERROR)
-            ),
-            timeout_polls=timeout_polls,
-            description=f"commit buffer {self.index} completion",
-        )
-
-        status = CommitBufferStatus(value)
-        if status & CommitBufferStatus.ERROR:
-            error_count = await self.error_count()
-            raise SSRHardwareError(
-                f"Commit buffer {self.index} DMA failed: "
-                f"status=0x{value:08x}, error_count={error_count}"
-            )
-
-        return await self.completed_count()
-
+    async def clear(self) -> None:
+        await self.parent.rb.write_dword(self.reg["control"], int(CommitBufferControl.CLEAR))
+    
     async def release_and_rearm(self) -> None:
-        """Release a consumed DONE buffer and arm it for its next turn."""
-        status = await self.read_status()
-        if not status & CommitBufferStatus.DONE:
-            raise SSRDeviceBusyError(
-                f"Commit buffer {self.index} is not DONE"
-            )
-
-        await self.clear_status()
+        await self.clear()
         await self.arm()
 
+    def read_slot(self, slot_index: int) -> bytes:
+        if self._region is None or self._stride is None or self._capacity is None:
+            raise RuntimeError("CommitBuffer is not configured")
+    
+        if not 0 <= slot_index < self._capacity:
+            raise ValueError(f"CommitBuffer slot_index {slot_index} out of range [0, {self._capacity})")
 
+        offset = slot_index * self._stride
+        return bytes(self._region[offset:offset + self._stride])
+
+    
 class CommitQueue:
-    """Driver-side control of the FPGA-to-host commit DMA writer."""
+    """
+    NIC -> Host submission queue for committed proposals. The CommitQueue uses two ping-pong buffers to receive committed proposals from the hardware. The software can read completed slots from the buffers and re-arm them for further use.
+    """
+    def __init__(self, device: "SSRDevice") -> None:
+        self.device = device
+        self.log = SimLog("cocotb.ssr_dataplane.commit_queue")
 
-    def __init__(self, driver: "Driver") -> None:
-        self.driver = driver
-        self.rb = driver.rb
+        self.rb = device._rb
 
-        self.buffers = (
-            CommitBuffer(
-                self,
-                0,
-                addr_lo_reg=COMMIT_DMA_REG_BUF0_ADDR_LO,
-                addr_hi_reg=COMMIT_DMA_REG_BUF0_ADDR_HI,
-                capacity_reg=COMMIT_DMA_REG_BUF0_SLOT_CAPACITY,
-                control_reg=COMMIT_DMA_REG_BUF0_CONTROL,
-                status_reg=COMMIT_DMA_REG_BUF0_STATUS,
-                completed_reg=COMMIT_DMA_REG_BUF0_COMPLETED_COUNT,
-                error_reg=COMMIT_DMA_REG_BUF0_ERROR_COUNT,
-            ),
-            CommitBuffer(
-                self,
-                1,
-                addr_lo_reg=COMMIT_DMA_REG_BUF1_ADDR_LO,
-                addr_hi_reg=COMMIT_DMA_REG_BUF1_ADDR_HI,
-                capacity_reg=COMMIT_DMA_REG_BUF1_SLOT_CAPACITY,
-                control_reg=COMMIT_DMA_REG_BUF1_CONTROL,
-                status_reg=COMMIT_DMA_REG_BUF1_STATUS,
-                completed_reg=COMMIT_DMA_REG_BUF1_COMPLETED_COUNT,
-                error_reg=COMMIT_DMA_REG_BUF1_ERROR_COUNT,
-            ),
-        )
+        self._buffer0 = CommitBuffer(self, index=0)
+        self._buffer1 = CommitBuffer(self, index=1)
+        self._buffers = (self._buffer0, self._buffer1)
 
-    def buffer(self, index: int) -> CommitBuffer:
-        if index not in (0, 1):
-            raise ValueError("commit buffer index must be 0 or 1")
-        return self.buffers[index]
+        self._completed = Queue()
+        self._slot_len: int | None = None
+        self._slot_count: int = 0
 
-    async def read_status(self) -> CommitGlobalStatus:
-        value = await self.rb.read_dword(COMMIT_DMA_REG_STATUS)
-        return CommitGlobalStatus(int(value))
+        self._opened = False
+        self._running = False
+        self._poll_interval_ns = 200
+        self._run_error: BaseException | None = None
 
-    async def active_buffer(self) -> int:
-        value = await self.rb.read_dword(COMMIT_DMA_REG_ACTIVE_BUFFER)
-        return int(value) & 0x1
+    def _require_open(self) -> None:
+        if not self._opened:
+            raise SSRStateError("CommitQueue is not opened")
 
-    async def assert_buffer_configurable(self, buffer_index: int) -> None:
-        """Enforce the software/FPGA ownership contract.
+    @property
+    def slot_len(self) -> int:
+        self._require_open()
+        assert self._slot_len is not None
+        return self._slot_len
 
-        An inactive buffer can be configured while the writer is busy.  The
-        active buffer can also be configured or armed while the writer is
-        explicitly WAITING_ARMED_BUFFER.  Otherwise the active buffer belongs
-        to the FPGA and software must not modify it.
-        """
-        self.buffer(buffer_index)
-        status = await self.read_status()
+    async def open(self, buf_slot_count: int) -> None:
+        if self._opened:
+            raise RuntimeError("CommitQueue is already opened")
 
-        if not status & CommitGlobalStatus.BUSY:
-            return
+        if buf_slot_count <= 0:
+            raise ValueError("CommitQueue buffer slot count must be positive")
+        
+        magic = int(await self.rb.read_dword(REG_COMMIT_MAGIC))
+        version = int(await self.rb.read_dword(REG_COMMIT_VERSION))
+        if magic != COMMIT_MAGIC or version != COMMIT_VERSION:
+            raise RuntimeError("CommitQueue identity mismatch: "
+                               f"expected magic=0x{COMMIT_MAGIC:08x}, version=0x{COMMIT_VERSION:08x}, "
+                               f"got magic=0x{magic:08x}, version=0x{version:08x}")
 
-        active = await self.active_buffer()
-        if active != buffer_index:
-            return
+        self._slot_len = int(await self.rb.read_dword(REG_COMMIT_BUF_SLOT_LEN))  # assuming slot length is set in the config
+        if self._slot_len <= 0:
+            raise RuntimeError(f"CommitQueue slot length is invalid: {self._slot_len}")
+        self._slot_count = buf_slot_count
 
-        if status & CommitGlobalStatus.WAITING_ARMED_BUFFER:
-            return
+        await self.rb.write_dword(REG_COMMIT_STRIDE_LO, self._slot_len & 0xFFFFFFFF)
+        await self.rb.write_dword(REG_COMMIT_STRIDE_HI, (self._slot_len >> 32) & 0xFFFFFFFF)
 
-        raise SSRDeviceBusyError(
-            f"Commit buffer {buffer_index} is active and owned by the FPGA"
-        )
-
-    async def configure_stride(self, stride: int) -> None:
-        _validate_u64(stride, "stride")
-        if stride == 0:
-            raise ValueError("stride must be positive")
-
-        status = await self.read_status()
-        if status & CommitGlobalStatus.BUSY:
-            raise SSRDeviceBusyError(
-                "Commit writer is busy; stride cannot be changed"
-            )
-
-        await self.rb.write_dword(
-            COMMIT_DMA_REG_STRIDE_LO, stride & 0xFFFFFFFF
-        )
-        await self.rb.write_dword(
-            COMMIT_DMA_REG_STRIDE_HI, (stride >> 32) & 0xFFFFFFFF
-        )
+        for buf in self._buffers:
+            region = self.device.alloc_dma_region(self._slot_len * self._slot_count, fill=0x00)
+            await buf.configure(region, capacity=self._slot_count, stride=self._slot_len)
+        
+        self._opened = True
+        self.log.info("CommitQueue opened: slot_len=%d, buffer_slot_count=%d", self._slot_len, self._slot_count)
 
     async def start(self) -> None:
-        status = await self.read_status()
-        if status & CommitGlobalStatus.BUSY:
-            raise SSRDeviceBusyError(
-                "Commit DMA writer is already running"
-            )
+        self._require_open()
+        if self._running:
+            raise RuntimeError("CommitQueue is already running")
 
-        await self.rb.write_dword(
-            COMMIT_DMA_REG_CONTROL, int(CommitGlobalControl.START)
-        )
+        for buf in self._buffers:
+            await buf.clear()
+            await buf.arm()
+        
+        await self.rb.write_dword(REG_COMMIT_CONTROL, int(CommitControl.START))
 
-    async def stop(
-        self,
-        *,
-        wait: bool = True,
-        timeout_polls: int = 2000,
-    ) -> None:
-        await self.rb.write_dword(
-            COMMIT_DMA_REG_CONTROL, int(CommitGlobalControl.STOP)
-        )
-        if wait:
-            await self.wait_idle(
-                timeout_polls=timeout_polls,
-            )
+        self._run_error = None
+        self._running = True
+        self.log.info("CommitQueue started")
+    
+    async def stop(self) -> None:
+        if not self._running:
+            return
 
-    async def wait_idle(
-        self,
-        *,
-        timeout_polls: int = 2000,
-    ) -> CommitGlobalStatus:
-        value = await poll_register(
-            self.rb,
-            COMMIT_DMA_REG_STATUS,
-            lambda status: not bool(
-                status & int(CommitGlobalStatus.BUSY)
-            ),
-            timeout_polls=timeout_polls,
-            description="commit DMA writer idle",
-        )
-        return CommitGlobalStatus(value)
+        await self.rb.write_dword(REG_COMMIT_CONTROL, int(CommitControl.STOP))
+        self._running = False
+        await self._completed.put(None)  # unblock any waiting recv()
+        self.log.info("CommitQueue stopped")
+    
+    async def close(self) -> None:
+        self._require_open()
+        if self._running:
+            await self.stop()
 
-    async def wait_for_armed_buffer(
-        self,
-        *,
-        timeout_polls: int = 2000,
-    ) -> CommitGlobalStatus:
-        value = await poll_register(
-            self.rb,
-            COMMIT_DMA_REG_STATUS,
-            lambda status: bool(
-                status & int(CommitGlobalStatus.WAITING_ARMED_BUFFER)
-            ),
-            timeout_polls=timeout_polls,
-            description="commit writer waiting for an armed buffer",
-        )
-        return CommitGlobalStatus(value)
+        for buf in self._buffers:
+            buf._region = None
+            buf._capacity = None
+            buf._stride = None
+        
+        self._opened = False
+        self._slot_len = None
+        self._slot_count = 0
+        self.log.info("CommitQueue closed")
+    
+    def _on_parent_reset(self) -> None:
+        self._opened = False
+        self._running = False
+        self._slot_len = None
+        self._slot_count = 0
+        for buf in self._buffers:
+            buf._region = None
+            buf._capacity = None
+            buf._stride = None
 
+    async def read_global_status(self) -> CommitStatus:
+        return CommitStatus(int(await self.rb.read_dword(REG_COMMIT_STATUS)) & 0x7)
+    
+    async def read_active_buffer(self) -> int:
+        return int(await self.rb.read_dword(REG_COMMIT_ACTIVE_BUFFER)) & 0x1
+    
+    async def _diagnose(self) -> str:
+        gs = await self.read_global_status()
+        active = await self.read_active_buffer()
+        parts = [f"global={gs!r} active_buffer={active}"]
+        for buf in self._buffers:
+            parts.append(f"buffer{buf.index}={await buf.read_status()!r}")
+        return "CommitQueue status: " + ", ".join(parts)
+
+    async def run(self) -> None:
+        if not self._running:
+            raise RuntimeError("CommitQueue is not running")
+
+        self.log.info("CommitQueue run loop started")
+
+        try:
+            while self._running:
+                progessed = False
+
+                for buf in self._buffers:
+                    raw = await buf.read_raw_status()
+
+                    if not (raw & CommitBufferStatus.DONE):
+                        continue
+
+                    progessed = True
+
+                    n = await buf.read_completed_count()
+                    err = await buf.read_error_count()
+                    if err > 0:
+                        self.log.warning("buffer %d reports error_count=%d", buf.index, err)
+
+                    now = get_sim_time("ns")
+                    for slot_index in range(n):
+                        await self._completed.put(CommitRecord(buffer_index=buf.index, slot_index=slot_index, data=buf.read_slot(slot_index), sim_time_ns=now))
+                        
+                    self.log.info("buffer %d: %d completed slots read and queued for processing", buf.index, n)
+
+                    await buf.release_and_rearm()
+
+                if not progessed:
+                    await Timer(self._poll_interval_ns, units="ns")
+        except Exception as e:
+            self._run_error = e
+            self._running = False
+            self.log.error("CommitQueue run loop encountered an error: %s", e)
+        finally:
+            self.log.info("CommitQueue run loop exited")
+        
+    async def recv(self) -> CommitRecord:
+        if self._run_error is not None:
+            raise SSRHardwareError(f"CommitQueue run loop encountered an error: {self._run_error}") from self._run_error
+    
+        if not self._running:
+            raise RuntimeError("CommitQueue is not running")
+            
+        record = await self._completed.get()
+        if record is None:
+            if self._run_error is not None:
+                raise SSRHardwareError(f"CommitQueue run loop encountered an error: {self._run_error}") from self._run_error
+            raise RuntimeError("CommitQueue has been stopped")
+        return record
+
+    async def recv_batch(self, count: int, *, timeout_ns: int = 1_000_000) -> list[CommitRecord]:
+        out: list[CommitRecord] = []
+        deadline = get_sim_time("ns") + timeout_ns
+
+        while len(out) < count:
+            if get_sim_time("ns") > deadline:
+                raise SSRTimeoutError(f"Timeout while waiting for {count} commit records, got {len(out)}")
+
+            if self._completed.empty():
+                await Timer(100, units="ns")
+                continue
+        
+            out.append(await self.recv())
+        
+        return out
 
 # -----------------------------------------------------------------------------
-# Test-only shadow-dataplane controls
+#            Consensus core
 # -----------------------------------------------------------------------------
+class ConsensusCore:
+    def __init__(self, device: "SSRDevice") -> None:
+        self.device = device
+        self.log = SimLog("cocotb.ssr_dataplane.consensus_core")
 
-class SSRTestControl:
-    """Access to proposal_buffer_sink and commit_generator test registers.
+        self.rb = device._rb
 
-    These controls are kept separate because they do not belong to the future
-    production auxiliary driver.
-    """
+    async def set_enabled(self, enabled: bool) -> None:
+        await self.rb.write_dword(REG_CONSENSUS_GLOBAL_ENABLE, 1 if enabled else 0)
 
-    def __init__(self, driver: "Driver") -> None:
-        self.driver = driver
-        self.rb = driver.rb
-        self._proposal_sink_enabled = False
+    async def is_enabled(self) -> bool:
+        return bool(int(await self.rb.read_dword(REG_CONSENSUS_GLOBAL_ENABLE)) & 0x1)
 
-    async def set_proposal_sink_enabled(self, enabled: bool) -> None:
-        self._proposal_sink_enabled = bool(enabled)
-        value = (
-            int(ProposalSinkControl.ENABLE)
-            if self._proposal_sink_enabled
-            else 0
-        )
-        await self.rb.write_dword(COMMON_REG_PROPOSAL_SINK_CONTROL, value)
+    async def read_run_id(self) -> int:
+        return int(await self.rb.read_dword(REG_CONSENSUS_RUN_ID))
 
-    async def clear_proposal_sink(self) -> None:
-        base = (
-            int(ProposalSinkControl.ENABLE)
-            if self._proposal_sink_enabled
-            else 0
-        )
-        await self.rb.write_dword(
-            COMMON_REG_PROPOSAL_SINK_CONTROL,
-            base | int(ProposalSinkControl.CLEAR),
-        )
-        await self.rb.write_dword(COMMON_REG_PROPOSAL_SINK_CONTROL, base)
+    async def read_activate(self) -> bool:
+        return bool(int(await self.rb.read_dword(REG_CONSENSUS_ACTIVATE)) & 0x1)
+    
+    async def read_halt(self) -> bool:
+        return bool(int(await self.rb.read_dword(REG_CONSENSUS_HALT)) & 0x1)
 
-    async def proposal_sink_counts(self) -> tuple[int, int, int]:
-        slots = int(
-            await self.rb.read_dword(COMMON_REG_PROPOSAL_SINK_SLOT_COUNT)
-        )
-        beats = int(
-            await self.rb.read_dword(COMMON_REG_PROPOSAL_SINK_BEAT_COUNT)
-        )
-        errors = int(
-            await self.rb.read_dword(COMMON_REG_PROPOSAL_SINK_ERROR_COUNT)
-        )
-        return slots, beats, errors
+    async def install_config(self, *, run_id: int, membership: int) -> None:
+        _validate_u32(run_id, "run_id")
+        _validate_u32(membership, "membership")
 
-    async def wait_proposal_sink_slots(
-        self,
-        expected_slots: int,
-        *,
-        timeout_polls: int = 2000,
-    ) -> int:
-        _validate_u32(expected_slots, "expected_slots")
-        return await poll_register(
-            self.rb,
-            COMMON_REG_PROPOSAL_SINK_SLOT_COUNT,
-            lambda count: count >= expected_slots,
-            timeout_polls=timeout_polls,
-            description=f"proposal sink to receive {expected_slots} slots",
-        )
+        await self.rb.write_dword(REG_CONSENSUS_RUN_ID, run_id)
+        await self.rb.write_dword(REG_CONSENSUS_MEMBERSHIP, membership)
+        await self.rb.write_dword(REG_CONSENSUS_ACTIVATE, 1)
 
-    async def clear_commit_generator(self) -> None:
-        await self.rb.write_dword(
-            COMMON_REG_COMMIT_GEN_CONTROL,
-            int(CommitGeneratorControl.CLEAR),
-        )
-        await self.rb.write_dword(COMMON_REG_COMMIT_GEN_CONTROL, 0)
+    async def activate(self, *, run_id: int, membership: int, verify: bool = True) -> None:
+        await self.install_config(run_id=run_id, membership=membership)
 
-    async def start_commit_generator(
-        self,
-        count: int,
-        *,
-        clear_first: bool = True,
-    ) -> None:
-        _validate_u32(count, "count")
-        if count == 0:
-            raise ValueError("count must be positive")
+        if verify:
+            actual_run_id = await self.read_run_id()
+            actual_membership = int(await self.rb.read_dword(REG_CONSENSUS_MEMBERSHIP))
+            if actual_run_id != run_id or actual_membership != membership:
+                raise SSRHardwareError(f"ConsensusCore activation failed: expected run_id={run_id}, membership={membership}, got run_id={actual_run_id}, membership={actual_membership}")
 
-        status = CommitGeneratorStatus(
-            int(await self.rb.read_dword(COMMON_REG_COMMIT_GEN_STATUS))
-        )
-        if status & CommitGeneratorStatus.BUSY:
-            raise SSRDeviceBusyError("Commit generator is already running")
+        await self.rb.write_dword(REG_CONSENSUS_ACTIVATE, 1)
 
-        if clear_first:
-            await self.clear_commit_generator()
+        self.log.info("ConsensusCore activated: run_id=%d, membership=%d", run_id, membership)
 
-        await self.rb.write_dword(COMMON_REG_COMMIT_GEN_COUNT, count)
-        await self.rb.write_dword(
-            COMMON_REG_COMMIT_GEN_CONTROL,
-            int(CommitGeneratorControl.START),
-        )
+    async def deactivate(self) -> None:
+        await self.rb.write_dword(REG_CONSENSUS_ACTIVATE, 0)
+        self.log.info("ConsensusCore deactivated")
+    
+    async def reboot(self) -> None:
+        await self.rb.write_dword(REG_CONSENSUS_REBOOT, 1)
+        await self.rb.write_dword(REG_CONSENSUS_REBOOT, 0)
 
-    async def stop_commit_generator(self) -> None:
-        await self.rb.write_dword(
-            COMMON_REG_COMMIT_GEN_CONTROL,
-            int(CommitGeneratorControl.STOP),
-        )
+    # ---- Wait Halt ----
+    async def wait_halt(self, *, timeout_polls: int = 10000) -> bool:
+        try:
+            await poll_register(lambda: self.rb.read_dword(REG_CONSENSUS_HALT),
+                                lambda x: x & 0x1,
+                                timeout_polls=timeout_polls,
+                                what="consensus halt")
+            return True
+        except SSRTimeoutError:
+            return False
 
-    async def wait_commit_generator_done(
-        self,
-        *,
-        timeout_polls: int = 2000,
-    ) -> CommitGeneratorStatus:
-        value = await poll_register(
-            self.rb,
-            COMMON_REG_COMMIT_GEN_STATUS,
-            lambda status: bool(
-                status & int(CommitGeneratorStatus.DONE)
-            ),
-            timeout_polls=timeout_polls,
-            description="commit generator completion",
-        )
-        return CommitGeneratorStatus(value)
+    async def assert_not_halted(self) -> None:
+        halted = await self.read_halt()
+        if halted:
+            raise SSRHardwareError("ConsensusCore is halted")
 
-    async def commit_generator_counts(self) -> tuple[int, int]:
-        slots = int(
-            await self.rb.read_dword(
-                COMMON_REG_COMMIT_GEN_GENERATED_SLOT_COUNT
-            )
-        )
-        beats = int(
-            await self.rb.read_dword(
-                COMMON_REG_COMMIT_GEN_GENERATED_BEAT_COUNT
-            )
-        )
-        return slots, beats
-
-
+    async def _diagnose(self) -> str:
+        return (f"ConsensusCore status: enabled={await self.is_enabled()}, "
+                f"run_id={await self.read_run_id()}, "
+                f"membership={int(await self.rb.read_dword(REG_CONSENSUS_MEMBERSHIP))}, "
+                f"activate={await self.read_activate()}, "
+                f"halt={await self.read_halt()}")
+    
 # -----------------------------------------------------------------------------
 #               Top-level SSR auxiliary-driver model
 # -----------------------------------------------------------------------------
 
-class Driver:
+class SSRDevice:
     """
     Cocotb model of the SSR auxiliary application driver.
     """
@@ -771,144 +855,166 @@ class Driver:
     def __init__(self) -> None:
         self.log = SimLog("cocotb.ssr_dataplane")
 
+        self._state = SSRDeviceState.UNINITIALIZED
+
         # Resources borrowed from the already initialized parent MQNIC driver.
         self.mdev: Any = None
-        self.pool: Any = None
+        self.mem_pool: Any = None
         self.app_hw_regs: Any = None
+        self._reg_blks: Any = None
 
-        # SSR state created by probe().
-        self.reg_blocks = mqnic.RegBlockList()
-        self.ssr_rb: Any = None
-        self.rb: Any = None
+        # SSR child objects created by probe().
         self._proposal: ProposalQueue | None = None
         self._commit: CommitQueue | None = None
-        self._test: SSRTestControl | None = None
 
-        self.bound = False
+        self._bound = False
+        self._consensus: ConsensusCore | None = None
+        self._commit_task = None
+
+    @property
+    def state(self) -> SSRDeviceState:
+        return self._state
 
     @property
     def proposal(self) -> ProposalQueue:
         if self._proposal is None:
-            raise SSRDriverError("SSR auxiliary driver is not bound")
+            raise RuntimeError("ProposalQueue is not initialized")
         return self._proposal
 
     @property
     def commit(self) -> CommitQueue:
         if self._commit is None:
-            raise SSRDriverError("SSR auxiliary driver is not bound")
+            raise RuntimeError("CommitQueue is not initialized")
         return self._commit
-
+    
     @property
-    def test(self) -> SSRTestControl:
-        if self._test is None:
-            raise SSRDriverError("SSR auxiliary driver is not bound")
-        return self._test
+    def consensus(self) -> ConsensusCore:
+        if self._consensus is None:
+            raise RuntimeError("ConsensusCore is not initialized")
+        return self._consensus
 
-    async def probe(self, mqnic_driver: Any, *, run_self_test: bool = True) -> None:
+    def _require_state(self, *allowed_states: SSRDeviceState) -> None:
+        if self._state not in allowed_states:
+            raise RuntimeError(
+                f"SSR auxiliary driver is in state {self._state.name}, "
+                f"but one of {[s.name for s in allowed_states]} is required"
+            )
+
+    async def probe(self, mqnic_driver: Any) -> None:
         """
-        Bind to an already initialized parent :class:`mqnic.Driver`.
+        Probe the SSR auxiliary device and bind it to the parent MQNIC driver.
+            1. Bind to the parent MQNIC device
+            2. Enumerate the register blocks in the application BAR
+            3. Validate the SSR identity and features
+            4. Create the ProposalQueue, CommitQueue, and SSRTestControl objects
         """
-        self.log.info("Probing SSR auxiliary driver")
-        assert not self.bound, "SSR auxiliary driver is already bound"
+        self.log.info("Probing SSR auxiliary device")
+        self._require_state(SSRDeviceState.UNINITIALIZED)
+
         assert mqnic_driver is not None, "parent mqnic driver is required"
         assert mqnic_driver.initialized, "parent mqnic driver must be initialized"
         assert mqnic_driver.app_hw_regs is not None, "parent mqnic driver must expose an application BAR"
 
-        self.mdev = mqnic_driver
-        self.pool = mqnic_driver.pool
-        self.app_hw_regs = mqnic_driver.app_hw_regs
-
-        try:
-            await self._probe_common(run_self_test=run_self_test)
-        except Exception:
-            self._clear_binding()
-            raise
-
-        self.bound = True
+        self._mdev = mqnic_driver
+        self._mem_pool = mqnic_driver.rc.mem_pool
+        self._app_hw_regs = mqnic_driver.app_hw_regs
         self.log.info("SSR auxiliary driver bound successfully")
 
-    async def _probe_common(self, *, run_self_test: bool) -> None:
-        """Enumerate the application BAR and create SSR child objects."""
+        # enumerate the register blocks in the application BAR
         self.log.info("Enumerating SSR application register blocks")
-        self.reg_blocks = mqnic.RegBlockList()
-        await self.reg_blocks.enumerate_reg_blocks(self.app_hw_regs)
+        self._reg_blks = mqnic.RegBlockList()
+        await self._reg_blks.enumerate_reg_blocks(self._app_hw_regs)
 
-        self.ssr_rb = self.reg_blocks.find(SSR_RB_TYPE, SSR_RB_VERSION)
-        if self.ssr_rb is None:
-            raise SSRDriverProbeError("SSR application register block was not found")
+        # find the SSR register block and validate its identity
+        self._rb = self._reg_blks.find(SSR_RB_TYPE, SSR_RB_VERSION)
+        if self._rb is None:
+            raise RuntimeError(
+                f"SSR register block not found in application BAR; "
+                f"expected type=0x{SSR_RB_TYPE:08x}, version=0x{SSR_RB_VERSION:08x}"
+            )
 
-        self.rb = self.ssr_rb
+        # create the ProposalQueue, CommitQueue, and SSRTestControl objects
         self._proposal = ProposalQueue(self)
         self._commit = CommitQueue(self)
-        self._test = SSRTestControl(self)
+        self._consensus = ConsensusCore(self)
 
-        await self.validate_identity()
-        self.log.info("Validating proposal queue identity")
-        await self._proposal.validate_identity()
+        self._state = SSRDeviceState.PROBED
 
-        if run_self_test:
-            await self.self_test()
+    async def open(self) -> None:
+        """
+        Open the SSR auxiliary device:
+            1. Acquire control of the proposal and commit DMA engines
+            2. Allocate DMA buffers
+            3. Configure the proposal and commit DMA engines
+            4. Initialize the producer/consumer index
+            5. Make sure the hardware is ready to accept proposals and generate commits
+        """
+        self.log.info("Opening SSR auxiliary device")
+        self._require_state(SSRDeviceState.PROBED)
+
+        # open the proposal and commit queues
+        await self._proposal.open()
+        await self._commit.open(buf_slot_count=16)  # example slot count 
+
+        self._state = SSRDeviceState.OPENED
+
+    async def reset(self) -> None:
+        """
+        Reset the SSR auxiliary device:
+            1. Stop the proposal and commit DMA engines
+            2. Release DMA buffers
+            3. Release control of the proposal and commit DMA engines
+            4. Re-acquire control of the proposal and commit DMA engines
+            5. Re-allocate DMA buffers
+            6. Re-configure the proposal and commit DMA engines
+            7. Re-initialize the producer/consumer index
+            8. Make sure the hardware is ready to accept proposals and generate commits
+        """
+        self._require_state(SSRDeviceState.OPENED,
+                            SSRDeviceState.PROBED,
+                            SSRDeviceState.RUNNING,
+                            SSRDeviceState.UNINITIALIZED)
+
+
+        self._state = SSRDeviceState.UNINITIALIZED
+
+    async def start(self) -> None:
+        self._require_state(SSRDeviceState.OPENED)
+        await self._commit.start()
+        self._commit_task = cocotb.start_soon(self._commit.run())
+
+        self._state = SSRDeviceState.RUNNING
+
+    async def stop(self) -> None:
+        self._require_state(SSRDeviceState.RUNNING)
+        await self._commit.stop()
+        if self._commit_task is not None:
+            self._commit_task.cancel()
+            self._commit_task = None
+        self._state = SSRDeviceState.OPENED
+
+    async def close(self) -> None:
+        """
+        Close the SSR auxiliary device:
+            1. Stop the proposal and commit DMA engines
+            2. Release DMA buffers
+            3. Release control of the proposal and commit DMA engines
+        """
+        self._require_state(SSRDeviceState.OPENED)
+        self._state = SSRDeviceState.PROBED
 
     async def remove(self) -> None:
-        """Detach the SSR auxiliary driver from its parent MQNIC device."""
-        if not self.bound:
-            return
+        """
+        Remove the SSR auxiliary device:
+            1. Stop the proposal and commit DMA engines
+            2. Release DMA buffers
+            3. Release control of the proposal and commit DMA engines
+            4. Unbind from the parent MQNIC driver
+        """
+        self._require_state(SSRDeviceState.PROBED)
 
-        self._clear_binding()
-        self.log.info("SSR auxiliary driver removed")
 
-    def _clear_binding(self) -> None:
-        self._test = None
-        self._commit = None
-        self._proposal = None
-
-        self.rb = None
-        self.ssr_rb = None
-        self.reg_blocks = mqnic.RegBlockList()
-
-        self.app_hw_regs = None
-        self.pool = None
-        self.mdev = None
-        self.bound = False
-
-    async def validate_identity(self) -> None:
-        rb_type = int(await self.rb.read_dword(COMMON_REG_TYPE))
-        rb_version = int(await self.rb.read_dword(COMMON_REG_VERSION))
-        rb_features = int(await self.rb.read_dword(COMMON_REG_FEATURES))
-
-        if rb_type != SSR_RB_TYPE:
-            raise SSRDriverProbeError(
-                f"SSR type mismatch: expected 0x{SSR_RB_TYPE:08x}, "
-                f"got 0x{rb_type:08x}"
-            )
-        if rb_version != SSR_RB_VERSION:
-            raise SSRDriverProbeError(
-                f"SSR version mismatch: expected 0x{SSR_RB_VERSION:08x}, "
-                f"got 0x{rb_version:08x}"
-            )
-        if rb_features & SSR_RB_FEATURES != SSR_RB_FEATURES:
-            raise SSRDriverProbeError(
-                f"SSR feature mismatch: required 0x{SSR_RB_FEATURES:08x}, "
-                f"got 0x{rb_features:08x}"
-            )
-
-    async def self_test(self, pattern: int = 0x12345678) -> None:
-        _validate_u32(pattern, "pattern")
-
-        old_value = int(await self.rb.read_dword(COMMON_REG_SCRATCH))
-        await self.rb.write_dword(COMMON_REG_SCRATCH, pattern)
-        readback = int(await self.rb.read_dword(COMMON_REG_SCRATCH))
-        await self.rb.write_dword(COMMON_REG_SCRATCH, old_value)
-
-        if readback != pattern:
-            raise SSRDriverProbeError(
-                f"SSR scratch self-test failed: wrote 0x{pattern:08x}, "
-                f"read 0x{readback:08x}"
-            )
-
-    async def read_common_status(self) -> CommonStatus:
-        value = await self.rb.read_dword(COMMON_REG_STATUS)
-        return CommonStatus(int(value))
+        self._state = SSRDeviceState.UNINITIALIZED
 
     async def configure_replica(
         self,
@@ -918,10 +1024,6 @@ class Driver:
         round_length_ns: int,
         ethernet_type: int,
     ) -> None:
-        _validate_u32(replica_id, "replica_id")
-        _validate_u32(replica_num, "replica_num")
-        _validate_u32(round_length_ns, "round_length_ns")
-        _validate_u32(ethernet_type, "ethernet_type")
 
         if replica_num == 0 or replica_num > COMMON_MAX_REPLICAS:
             raise ValueError(
@@ -932,16 +1034,16 @@ class Driver:
         if round_length_ns == 0:
             raise ValueError("round_length_ns must be positive")
 
-        await self.rb.write_dword(
+        await self._rb.write_dword(
             COMMON_REG_CONFIG_REPLICA_ID, replica_id
         )
-        await self.rb.write_dword(
+        await self._rb.write_dword(
             COMMON_REG_CONFIG_REPLICA_NUM, replica_num
         )
-        await self.rb.write_dword(
+        await self._rb.write_dword(
             COMMON_REG_CONFIG_ROUND_LEN_NS, round_length_ns
         )
-        await self.rb.write_dword(
+        await self._rb.write_dword(
             COMMON_REG_CONFIG_ETH_TYPE, ethernet_type
         )
 
@@ -965,11 +1067,11 @@ class Driver:
 
         value = self._mac_to_int(mac)
         offset = index * COMMON_MAC_ENTRY_STRIDE
-        await self.rb.write_dword(
+        await self._rb.write_dword(
             COMMON_REG_CONFIG_MACTABLE_ADDR_LO + offset,
             value & 0xFFFFFFFF,
         )
-        await self.rb.write_dword(
+        await self._rb.write_dword(
             COMMON_REG_CONFIG_MACTABLE_ADDR_HI + offset,
             (value >> 32) & 0xFFFF,
         )
@@ -980,55 +1082,27 @@ class Driver:
 
         offset = index * COMMON_MAC_ENTRY_STRIDE
         lo = int(
-            await self.rb.read_dword(
+            await self._rb.read_dword(
                 COMMON_REG_CONFIG_MACTABLE_ADDR_LO + offset
             )
         )
         hi = int(
-            await self.rb.read_dword(
+            await self._rb.read_dword(
                 COMMON_REG_CONFIG_MACTABLE_ADDR_HI + offset
             )
         )
         return ((hi & 0xFFFF) << 32) | lo
+    
+    def alloc_dma_region(self, size: int, fill: int = 0x00) -> Any:
+        """
+        Allocate a DMA region of the given size and fill it with the specified byte value.
+        """
+        if self._mem_pool is None:
+            raise RuntimeError("DMA pool is not initialized")
 
-    def alloc_dma_region(self, size: int, *, fill: int | None = None) -> Any:
-        assert self.bound and self.pool is not None, "SSR auxiliary driver must be bound to a DMA-capable parent"
-        assert size > 0, "size must be positive"
+        region = self._mem_pool.alloc_region(size)
+        if region is None:
+            raise RuntimeError("Failed to allocate DMA region")
 
-        region = self.pool.alloc_region(size)
-        if fill is not None:
-            if fill < 0 or fill > 0xFF:
-                raise ValueError("fill must be an 8-bit value")
-            region[:] = bytes([fill]) * size
+        region[:] = bytes([fill] * size)
         return region
-
-    @staticmethod
-    def dma_address(region: Any, offset: int = 0) -> int:
-        if offset < 0:
-            raise ValueError("offset must be non-negative")
-        return int(region.get_absolute_address(offset))
-
-
-__all__ = [
-    "Driver",
-    "ProposalQueue",
-    "CommitQueue",
-    "CommitBuffer",
-    "SSRTestControl",
-    "SSRDriverError",
-    "SSRDriverProbeError",
-    "SSRDriverTimeoutError",
-    "SSRDeviceBusyError",
-    "SSRHardwareError",
-    "CommonStatus",
-    "ProposalControl",
-    "ProposalStatus",
-    "CommitGlobalControl",
-    "CommitGlobalStatus",
-    "CommitBufferControl",
-    "CommitBufferStatus",
-    "ProposalSinkControl",
-    "CommitGeneratorControl",
-    "CommitGeneratorStatus",
-    "poll_register",
-]

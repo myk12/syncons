@@ -168,6 +168,9 @@ XDC_FILES += $(CORUNDUM_COMMON)/syn/vivado/rb_drp.tcl
 XDC_FILES += $(CORUNDUM_COMMON)/syn/vivado/cmac_gty_wrapper.tcl
 XDC_FILES += $(CORUNDUM_COMMON)/syn/vivado/cmac_gty_ch_wrapper.tcl
 
+# Application-specific constraints
+XDC_FILES += $(SSR_APP_DIR)/syn/vivado/consensus_core.tcl
+
 # IP
 IP_TCL_FILES = $(CORUNDUM_BOARD)/ip/pcie4_uscale_plus_0.tcl
 IP_TCL_FILES += $(CORUNDUM_BOARD)/ip/cmac_usplus.tcl

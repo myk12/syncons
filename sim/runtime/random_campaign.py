@@ -71,9 +71,9 @@ def _random_network_fault_model(
                 reason="random one-round delay",
             )
 
-        sound_override = None
+        row_override = None
         if rng.random() < config.ack_corruption:
-            sound_override = rng.randrange(1 << config.node_count)
+            row_override = rng.randrange(1 << config.node_count)
 
         extra_deliver_rounds = ()
         if rng.random() < config.duplicate:
@@ -82,7 +82,7 @@ def _random_network_fault_model(
         return Delivery(
             deliver_round=packet.round_id,
             reason="random same-epoch delivery",
-            sound_override=sound_override,
+            row_override=row_override,
             extra_deliver_rounds=extra_deliver_rounds,
         )
 

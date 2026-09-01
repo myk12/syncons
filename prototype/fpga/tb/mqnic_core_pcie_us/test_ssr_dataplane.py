@@ -173,13 +173,23 @@ async def run_test_ssr_dataplane_end_to_end(dut):
     9. check nothing gets sent out
     '''
 
+    # init testbench
     tb = TB(dut, msix_count=2 ** len(dut.core_pcie_inst.irq_index))
     await tb.init()
 
+    # init driver
     tb.log.info("Init driver")
     await tb.driver.init_pcie_dev(tb.rc.find_device(tb.dev.functions[0].pcie_id))
+
+    # open interfaces
     for interface in tb.driver.interfaces:
         await interface.ndevs[0].open()
+
+    # init ssr driver
+    tb.log.info("Init SSR driver")
+    ssr_dev = ssr.SSRDevice()
+    await ssr_dev.probe(tb.driver)
+    await ssr_dev.open()    # allocate resource
 
     app_reg_blocks = mqnic.RegBlockList()
     await app_reg_blocks.enumerate_reg_blocks(tb.driver.app_hw_regs)
@@ -193,6 +203,10 @@ async def run_test_ssr_dataplane_end_to_end(dut):
     assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_FEATURES) == ssr.SSR_RB_FEATURES
 
     await configure_ssr(tb, ssr_rb)
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_ID) == 0x00000000
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_REPLICA_NUM) == 0x00000003
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ROUND_LEN_NS) == 0x0BEBC200
+    assert await ssr_rb.read_dword(ssr.RBB_COMMON + ssr.COMMON_REG_CONFIG_ETH_TYPE) == 0x00000177
 
     tb.log.info("Test SSR DMA Proposal Datapath")
 

@@ -89,7 +89,7 @@ class Packet:
     round_id: int
     src_id: int
     run_id: int
-    sound_bitmap: int
+    row: int
     payload: str
 
 
@@ -104,9 +104,9 @@ class RoundStage:
     round_id: int
     membership_epoch: int = 0
     installed_membership: int = 0
-    sound_bitmap: int = 0
+    row: int = 0
     proposals: dict[int, str] = field(default_factory=dict)
-    sound_matrix: dict[int, int] = field(default_factory=dict)
+    rows: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -271,7 +271,7 @@ class DeliveryCopy:
     reason: str = "duplicate deliver"
     packet_round_override: int | None = None
     run_id_override: int | None = None
-    sound_override: int | None = None
+    row_override: int | None = None
     payload_override: str | None = None
 
 
@@ -281,7 +281,7 @@ class Delivery:
     reason: str = "deliver"
     packet_round_override: int | None = None
     run_id_override: int | None = None
-    sound_override: int | None = None
+    row_override: int | None = None
     payload_override: str | None = None
     extra_deliver_rounds: tuple[int, ...] = ()
     extra_copies: tuple[DeliveryCopy, ...] = ()

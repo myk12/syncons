@@ -18,3 +18,4 @@
 
 # pytest/cocotb cache, if generated
 **/.pytest_cache/
+*.gtkw

@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..control.control_plane import OnlineRejoinControlPlane
 from .faults import (
     all_nodes_active,
-    network_sound_bitmap_corruption,
+    network_row_corruption,
     network_asymmetric_loss,
     network_bridge_partition,
     network_future_round_skew,
@@ -59,11 +59,11 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_bridge_partition,
         node_fault_model=all_nodes_active,
         rounds=5,
-        description="Nodes 1 and 2 both miss each other in round 0, creating a partial split rather than a clean asymmetric loss. Node 0 keeps a complete local view for one round, while nodes 1 and 2 halt immediately and node 0 halts one round later.",
+        description="Nodes 1 and 2 both miss each other in round 0, creating a partial split rather than a clean asymmetric loss. All three observations of round 0 differ, so no agreed row exists anywhere and all three halt at the same boundary without committing.",
         expectation=ScenarioExpectation(
             statuses=("HALTED", "HALTED", "HALTED"),
-            committed_rounds=((0,), (), ()),
-            halted_rounds=(3, 2, 2),
+            committed_rounds=((), (), ()),
+            halted_rounds=(2, 2, 2),
         ),
     ),
     "one_epoch_delay": ScenarioSpec(
@@ -92,22 +92,22 @@ SCENARIOS: dict[str, ScenarioSpec] = {
         network_fault_model=network_future_round_skew,
         node_fault_model=all_nodes_active,
         rounds=5,
-        description="One node labels a round-0 packet as round 1. Nodes 0 and 1 therefore miss node 2's round-0 proposal and halt on an invalid commit set, while node 2 commits round 0 locally and halts one round later when no agreed row remains.",
+        description="One node labels a round-0 packet as round 1. Nodes 0 and 1 therefore miss node 2's round-0 proposal, but they miss it identically: their observation rows agree, they form a quorum without node 2, shrink the sound set and keep committing. Node 2 is alone in having heard everyone and halts with no agreed row.",
         expectation=ScenarioExpectation(
-            statuses=("HALTED", "HALTED", "HALTED"),
-            committed_rounds=((), (), (0,)),
-            halted_rounds=(2, 2, 3),
+            statuses=("RUNNING", "RUNNING", "HALTED"),
+            committed_rounds=((0, 1, 2), (0, 1, 2), ()),
+            halted_rounds=(None, None, 2),
         ),
     ),
     "ack_bitmap_corruption": ScenarioSpec(
-        network_fault_model=network_sound_bitmap_corruption,
+        network_fault_model=network_row_corruption,
         node_fault_model=all_nodes_active,
         rounds=5,
-        description="A corrupted control payload causes node 2 to derive an incompatible local view and halt, while nodes 0 and 1 continue after committing the same old rounds.",
+        description="A corrupted control payload causes node 2 to derive an incompatible local view. It drops node 1 from its sound set and so stops counting node 1's evidence, which costs it its quorum one round later. Nodes 0 and 1 are unaffected and keep committing.",
         expectation=ScenarioExpectation(
             statuses=("RUNNING", "RUNNING", "HALTED"),
-            committed_rounds=((0, 1, 2), (0, 1, 2), (0,)),
-            halted_rounds=(None, None, 3),
+            committed_rounds=((0, 1, 2), (0, 1, 2), (0, 1)),
+            halted_rounds=(None, None, 4),
         ),
     ),
     "controlled_rejoin": ScenarioSpec(

@@ -132,7 +132,7 @@ class ClusterRun:
             round_id=packet.round_id if delivery.packet_round_override is None else delivery.packet_round_override,
             src_id=packet.src_id,
             run_id=packet.run_id if delivery.run_id_override is None else delivery.run_id_override,
-            sound_bitmap=packet.sound_bitmap if delivery.sound_override is None else delivery.sound_override,
+            row=packet.row if delivery.row_override is None else delivery.row_override,
             payload=packet.payload if delivery.payload_override is None else delivery.payload_override,
         )
 

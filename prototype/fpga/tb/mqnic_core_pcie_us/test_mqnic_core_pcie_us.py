@@ -26,13 +26,15 @@ from cocotbext.pcie.xilinx.us import UltraScalePlusPcieDevice
 
 try:
     import mqnic
-    import ssr_dataplane
+    import ssr_dataplane as ssr
+    import ssr_sim_harness as ssr_sim
 except ImportError:
     # attempt import from current directory
     sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
     try:
         import mqnic
-        import ssr_dataplane
+        import ssr_dataplane as ssr
+        import ssr_sim_harness as ssr_sim
     finally:
         del sys.path[0]
 
@@ -271,8 +273,6 @@ class TB(object):
         self.rc.make_port().connect(self.dev)
 
         self.driver = mqnic.Driver()
-
-        self.ssr_driver = ssr_dataplane.Driver()
 
         self.dev.functions[0].configure_bar(0, 2**len(dut.core_pcie_inst.axil_ctrl_araddr), ext=True, prefetch=True)
         if hasattr(dut.core_pcie_inst, 'pcie_app_ctrl'):
@@ -723,7 +723,24 @@ async def run_test_nic(dut):
 
 @cocotb.test()
 async def run_test_ssr_dataplane(dut):
+    RUN_ID = 1
+    RTL_NODE_ID = 0
+    MAC_TABLE = (
+        "02:00:00:00:00:01",
+        "02:00:00:00:00:02",
+        "02:00:00:00:00:03",
+    )
 
+    CLUSTER_CONFIG = ssr_sim.ClusterConfig(
+        num_nodes=3,
+        mac_addresses=MAC_TABLE,
+        eth_type=0x88B5,
+        rtl_node_id=RTL_NODE_ID,
+    )
+
+    # ------------------------------------------
+    #       1. Initialize testbench
+    # ------------------------------------------
     tb = TB(dut, msix_count=2**len(dut.core_pcie_inst.irq_index))
 
     await tb.init()
@@ -733,72 +750,45 @@ async def run_test_ssr_dataplane(dut):
     for interface in tb.driver.interfaces:
         await interface.ndevs[0].open()
 
+    # ------------------------------------------
+    #    2. Initialize SSR Dataplane driver
+    # ------------------------------------------
     tb.log.info("Init SSR Dataplane driver")
-    await tb.ssr_driver.probe(tb.driver)
+    ssr_dev = ssr.SSRDevice()
+    await ssr_dev.probe(tb.driver)
 
-    tb.log.info("Init complete")
+    # 1. Configure SSR Dataplane
+    await ssr_dev.configure_replica(
+        replica_id=RTL_NODE_ID,
+        replica_num=3,
+        round_length_ns=4000,
+        ethernet_type=0x88B5)
 
-    tb.log.info("TEST SSR Dataplane Application")
+    for i, mac in enumerate(MAC_TABLE):
+        await ssr_dev.write_mac_address(i, mac)
 
-    tb.log.info("Testing Proposal Datapath...")
-    ssr = tb.ssr_driver
+    tb.log.info("Init SSR Dataplane Harness")
+    ssr_dp_path = dut.core_pcie_inst.core_inst.app.app_block_inst.ssr_dataplane_inst
 
-    proposal_count = 4
-    slot_bytes = await ssr.proposal.read_slot_length()
-    proposal_stride = slot_bytes
-    proposal_region_size = proposal_count * proposal_stride
+    harness = ssr_sim.SSRSimHarness(
+        dut_port=tb.port_mac[0],
+        round_start_pulse = ssr_dp_path.round_start_pulse,
+        round_commit_pulse = ssr_dp_path.round_commit_pulse,
+        round_id = ssr_dp_path.current_round_id,
+        run_id = ssr_dp_path.current_run_id,
+        cluster_config = CLUSTER_CONFIG,
+    )
 
-    tb.log.info("Proposal configuration: count=%d, slot_bytes=%d, stride=%d, region_size=%d", proposal_count, slot_bytes, proposal_stride, proposal_region_size)
+    harness.start()
 
-    # Allocate simulated host DMA memory through the SSR Dataplane driver
-    proposal_mem = ssr.alloc_dma_region(proposal_region_size, fill=0x00)
-    proposal_dma_addr = ssr.dma_address(proposal_mem)
-    assert proposal_dma_addr == proposal_mem.get_absolute_address(0), "DMA address mismatch"
+    # 2. open queues - allocating DMA buffers
+    await ssr_dev.open()
 
-    # Fill every proposal slot with a deterministic pattern for testing
-    for slot_index in range(proposal_count):
-        slot_offset = slot_index * proposal_stride
-        slot_data = bytes([(slot_index * 17 + byte_index) & 0xFF for byte_index in range(slot_bytes)])
-        proposal_mem[slot_offset:slot_offset + slot_bytes] = slot_data
+    await ssr_dev.start()
 
-    # Reset and enable the test-only proposal sink
-    await ssr.test.set_proposal_sink_enabled(True)
-    await ssr.test.clear_proposal_sink()
+    await ssr_dev.proposal.propose([b"cmd-%02d" % i for i in range(10)])
 
-    sink_slots, sink_beats, sink_errors = await ssr.test.proposal_sink_counts()
+    await ssr_dev.consensus.activate(run_id=RUN_ID, membership=0b111)
 
-    tb.log.info("Initial proposal sink countesr: slots=%d, beats=%d, errors=%d", sink_slots, sink_beats, sink_errors)
-
-    assert sink_slots == 0, "Expected 0 slots in proposal sink"
-    assert sink_beats == 0, "Expected 0 beats in proposal sink"
-    assert sink_errors == 0, "Expected 0 errors in proposal sink"
-
-    # submit one proposal DMA batch
-    tb.log.info("Start proposal DMA batch")
-    await ssr.proposal.submit(dma_addr=proposal_dma_addr, count=proposal_count, stride=proposal_stride)
-
-    proposal_status = await ssr.proposal.wait_done(timeout_polls = 10000)
-
-    tb.log.info("Proposal DMA batch completed with status: %s", proposal_status)
-
-    assert proposal_status & ssr_dataplane.ProposalStatus.DONE, "Proposal DMA batch did not complete successfully"
-    assert not (proposal_status & ssr_dataplane.ProposalStatus.ERROR), "Proposal DMA batch completed with error"
-
-    await ssr.test.wait_proposal_sink_slots(proposal_count, timeout_polls = 10000)
-
-    sink_slots, sink_beats, sink_errors = await ssr.test.proposal_sink_counts()
-
-    tb.log.info("Final proposal sink countesr: slots=%d, beats=%d, errors=%d", sink_slots, sink_beats, sink_errors)
-    assert sink_slots == proposal_count, "Expected %d slots in proposal sink, got %d" % (proposal_count, sink_slots)
-    assert sink_beats > 0, "Expected >0 beats in proposal sink, got %d" % sink_beats
-    assert sink_errors == 0, "Expected 0 errors in proposal sink, got %d" % sink_errors
-
-    active_index = await ssr.proposal.read_active_index()
-    entry_counter = await ssr.proposal.read_entry_counter()
-
-    tb.log.info("Proposal DMA result: active_index=%d, entry_counter=%d", active_index, entry_counter)
-
-    assert active_index == proposal_count
-    assert entry_counter >= proposal_count
-
-    tb.log.info("Proposal DMA test completed successfully")
+    rec = await ssr_dev.commit.recv()
+    assert not await ssr_dev.consensus.read_halt()
